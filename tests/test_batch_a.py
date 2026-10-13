@@ -116,6 +116,29 @@ async def test_sandbox_detects_syntax_error_as_ce_not_re():
     assert result.verdict == "CE"
 
 
+def test_memory_error_detection_across_languages():
+    """回归：内存分配失败的 stderr 必须被识别（用于 Unix 上判 MLE 而非 RE）。
+
+    真实故障：Linux 用 RLIMIT_AS 限内存时，超限进程是自己分配失败后异常退出
+    （不是被外部 kill），于是被误判成 RE —— 用户写的是内存超限的代码，却被告知
+    "运行时错误"。Windows 上由采样监控器主动 kill，不受影响，所以本机一直没暴露。
+    """
+    from app.judge.subprocess_backend import _looks_like_memory_error
+
+    # 各语言分配失败的真实表征
+    assert _looks_like_memory_error("MemoryError")  # Python
+    assert _looks_like_memory_error(
+        "terminate called after throwing an instance of 'std::bad_alloc'"
+    )  # C++
+    assert _looks_like_memory_error("java.lang.OutOfMemoryError: Java heap space")  # Java
+
+    # 普通运行时错误不得误判为 MLE
+    assert not _looks_like_memory_error("ZeroDivisionError: division by zero")
+    assert not _looks_like_memory_error("IndexError: list index out of range")
+    assert not _looks_like_memory_error("")
+    assert not _looks_like_memory_error(None)  # type: ignore[arg-type]
+
+
 @pytest.mark.skipif(not language_available("python"), reason="本机无 python")
 async def test_sandbox_detects_timeout():
     backend = build_backend("subprocess")

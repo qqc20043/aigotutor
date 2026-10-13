@@ -69,30 +69,36 @@ CASES = [
     TestCase(id="c2", input_data="100 200\n", expected_output="300\n"),
 ]
 
-SCENARIOS = {
+# 场景格式：(名称, 代码, 期望 verdict, 时间限制 ms, 内存限制 MB)
+#
+# 为什么每个场景要自带内存限制：不同语言的运行时基线内存差异极大 ——
+# C++ 动态链接程序加载后基线就有数十 MB，Java 更是上百 MB。若所有场景共用
+# 一个 64MB 上限，C++ 的正常程序会在启动阶段就被判 MLE（CI 实测踩到）。
+# 需要触发 MLE 的场景给一个"略高于运行时基线、但远低于分配量"的值。
+SCENARIOS: dict[str, list[tuple[str, str, str, int, int]]] = {
     "python": [
-        ("AC  正确实现", PY_AC, "AC", 1000),
-        ("WA  错误实现", PY_WA, "WA", 1000),
-        ("TLE 死循环", PY_TLE, "TLE", 1000),
-        ("RE  除零异常", PY_RE, "RE", 1000),
-        ("MLE 超内存", PY_MLE, "MLE", 1000),
-        ("CE  语法错误", PY_CE, "CE", 1000),
-        ("OLE 超大输出", PY_BIG_OUT, "OLE", 1000),
+        ("AC  正确实现", PY_AC, "AC", 1000, 256),
+        ("WA  错误实现", PY_WA, "WA", 1000, 256),
+        ("TLE 死循环", PY_TLE, "TLE", 1000, 256),
+        ("RE  除零异常", PY_RE, "RE", 1000, 256),
+        ("MLE 超内存", PY_MLE, "MLE", 1000, 64),
+        ("CE  语法错误", PY_CE, "CE", 1000, 256),
+        ("OLE 超大输出", PY_BIG_OUT, "OLE", 1000, 256),
     ],
     "java": [
-        ("AC  正确实现", JA_AC, "AC", 3000),
-        ("WA  错误实现", JA_WA, "WA", 3000),
-        ("CE  语法错误", JA_CE, "CE", 3000),
+        ("AC  正确实现", JA_AC, "AC", 3000, 512),
+        ("WA  错误实现", JA_WA, "WA", 3000, 512),
+        ("CE  语法错误", JA_CE, "CE", 3000, 512),
     ],
     "cpp": [
-        ("AC  正确实现", CPP_AC, "AC", 1000),
-        ("WA  错误实现", CPP_WA, "WA", 1000),
-        ("CE  语法错误", CPP_CE, "CE", 1000),
+        ("AC  正确实现", CPP_AC, "AC", 1000, 256),
+        ("WA  错误实现", CPP_WA, "WA", 1000, 256),
+        ("CE  语法错误", CPP_CE, "CE", 1000, 256),
     ],
 }
 
 
-def _scenarios_for(language: str) -> list[tuple[str, str, str, int]]:
+def _scenarios_for(language: str) -> list[tuple[str, str, str, int, int]]:
     """取某语言的场景清单；没有定义场景时返回空列表而不是抛 KeyError。
 
     真实故障：脚本按后端上报的 languages 遍历，而 SCENARIOS 只覆盖 python/java；
@@ -108,7 +114,6 @@ async def main() -> int:
         "--backend", default=os.environ.get("AIGOTUTOR_JUDGE_BACKEND", "subprocess")
     )
     parser.add_argument("--language", default=None, help="只测某语言")
-    parser.add_argument("--memory", type=int, default=64, help="内存限制 MB（用来触发 MLE）")
     args = parser.parse_args()
 
     backend = build_backend(args.backend)
@@ -133,13 +138,13 @@ async def main() -> int:
             print(f"\n跳过 {lang}（本脚本未定义该语言的测试场景）")
             continue
         print(f"\n== {lang} ==")
-        for name, code, expect, tl in scenarios:
+        for name, code, expect, tl, mem in scenarios:
             req = JudgeRequest(
                 language=lang,
                 code=code,
                 cases=CASES,
                 time_limit_ms=tl,
-                memory_limit_mb=args.memory,
+                memory_limit_mb=mem,
             )
             result = await backend.judge(req)
             checks += 1

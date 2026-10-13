@@ -81,6 +81,31 @@ SYNTAX_CHECK: dict[str, list[str]] = {
 }
 
 
+def _looks_like_memory_error(stderr: str) -> bool:
+    """stderr 是否呈现"内存分配失败"特征。
+
+    Unix 用 RLIMIT_AS 限内存时，超限进程不是被外部 kill，而是自己分配失败后
+    异常退出。各语言的表征不同，这里逐一匹配：
+
+      Python  MemoryError
+      C++     std::bad_alloc / terminate called after throwing
+      Java    java.lang.OutOfMemoryError
+
+    只在 Unix 且设了内存上限时使用（见 _run_case）。匹配不到就按普通 RE 处理 ——
+    宁可漏判成 RE，也不能把真正的运行时错误误报为 MLE。
+    """
+    if not stderr:
+        return False
+    markers = (
+        "MemoryError",
+        "std::bad_alloc",
+        "OutOfMemoryError",
+        "Cannot allocate memory",
+        "bad_alloc",
+    )
+    return any(m in stderr for m in markers)
+
+
 class SubprocessBackend(JudgeBackend):
     name = "subprocess"
 
@@ -309,6 +334,21 @@ class SubprocessBackend(JudgeBackend):
                 message="输出过大",
             )
         if code != 0:
+            # Unix 的 RLIMIT_AS 是"分配即失败"语义：超限时进程不是被外部杀掉，
+            # 而是自己因 MemoryError 崩溃退出（非零码 + 特定 stderr）。
+            # 若不识别这个模式就会误判成 RE —— 用户明明写的是内存超限的代码，
+            # 却被告知"运行时错误"，完全误导。Windows 上则由采样监控器主动 kill
+            # （code == -11），已在上面判过。
+            if IS_UNIX and mem_limit_mb > 0 and _looks_like_memory_error(err):
+                return CaseResult(
+                    case_id=case_id,
+                    verdict="MLE",
+                    time_ms=elapsed_ms,
+                    memory_kb=peak_kb,
+                    stdout=out[:2000],
+                    stderr=err[:2000],
+                    message=f"内存超出限制 {mem_limit_mb}MB（分配失败退出）",
+                )
             return CaseResult(
                 case_id=case_id,
                 verdict="RE",
