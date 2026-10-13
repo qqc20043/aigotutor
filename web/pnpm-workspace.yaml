@@ -1,0 +1,8 @@
+# pnpm 11 起，构建脚本白名单配置移到这里（package.json 的 pnpm 字段已不再读取）。
+#
+# 必须放行 esbuild：它需要下载平台二进制，缺它 vite 无法构建。
+# vue-demi 需要按 Vue 版本切换实现。
+# 其余包保持拦截 —— 不放宽整体策略，只放行这两个已知必要的。
+allowBuilds:
+  esbuild: true
+  vue-demi: true

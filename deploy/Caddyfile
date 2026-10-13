@@ -1,0 +1,53 @@
+# Caddy 反向代理配置（生产）。
+#
+# 自动 HTTPS：把 example.com 换成真实域名后，Caddy 会自动申请并续期证书，
+# 无需手工配置 certbot。本地测试可用 :80（HTTP）。
+
+{
+	# 生产建议开启 admin off（关闭管理 API）
+	admin off
+}
+
+# 替换为真实域名，例如 aigotutor.example.com
+:80 {
+	encode zstd gzip
+
+	# 安全响应头
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+		# 前端未用内联脚本与外部 CDN，因此可以收紧 CSP
+		Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'"
+		-Server
+	}
+
+	# 前端静态资源：带内容哈希，可长缓存
+	@assets path /assets/*
+	header @assets Cache-Control "public, max-age=31536000, immutable"
+
+	# SSE 流式接口：必须关闭缓冲，否则 token 会攒到最后一起下发
+	@stream path /api/agent/stream
+	reverse_proxy @stream app:8000 {
+		flush_interval -1
+	}
+
+	# 指标端点：默认只允许内网抓取（按需调整或删除）
+	@metrics path /metrics
+	reverse_proxy @metrics app:8000
+
+	# 其余请求
+	reverse_proxy app:8000 {
+		header_up X-Real-IP {remote_host}
+		# 传递真实 IP，供应用限流使用（应用会取 X-Forwarded-For 首段）
+		header_up X-Forwarded-For {remote_host}
+	}
+
+	log {
+		output file /data/access.log {
+			roll_size 20mb
+			roll_keep 5
+		}
+		format json
+	}
+}

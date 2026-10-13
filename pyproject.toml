@@ -1,0 +1,67 @@
+[project]
+name = "aigotutor"
+version = "1.0.0"
+description = "AIgoTutor · 多智能体算法刷题平台"
+requires-python = ">=3.11"
+readme = "README.md"
+
+[tool.ruff]
+# 目标版本与运行环境一致
+target-version = "py311"
+line-length = 100
+exclude = [".venv", "web/node_modules", "web/dist", "data", "logs"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear（找出真实 bug 模式）
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+    "SIM", # flake8-simplify
+    "RUF", # ruff 专有规则
+]
+ignore = [
+    "E501",   # 行长由 formatter 处理
+    "B008",   # FastAPI 依赖注入惯用 Query()/Depends() 作为默认值
+    "RUF001", # 全角标点在中文注释里是正常的
+    "RUF002",
+    "RUF003",
+    "UP017",  # 保留 timezone.utc：项目声明 >=3.11，但 datetime.UTC 是 3.11 才有的新写法，
+              # 保留旧写法零成本且对 3.10 环境更友好
+    "SIM117", # 嵌套 with 有时更易读（外层建资源、内层用资源），
+              # 强行合并会让 60+ 行的缩进体变形，收益不足
+]
+
+[tool.ruff.lint.per-file-ignores]
+# 测试里允许 assert、允许未使用变量（fixture 副作用）
+"tests/*" = ["S101", "B011"]
+# 脚本里允许 print
+"scripts/*" = ["T201"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app", "scripts", "tests"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.coverage.run]
+source = ["app"]
+omit = ["app/main.py"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]

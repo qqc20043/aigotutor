@@ -1,0 +1,118 @@
+:root {
+  --app-bg: #f5f7fa;
+  --app-sidebar-bg: #1f2d3d;
+  --app-sidebar-active: #409eff;
+  --app-radius: 8px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: 'Helvetica Neue', Helvetica, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei',
+    Arial, sans-serif;
+  background: var(--app-bg);
+  color: #303133;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 题目描述等长文本区域 */
+.prose {
+  line-height: 1.8;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.mono {
+  font-family: 'JetBrains Mono', Consolas, Monaco, 'Courier New', monospace;
+}
+
+/* 代码块：可横向滚动，避免撑破布局 */
+.code-block {
+  background: #282c34;
+  color: #abb2bf;
+  border-radius: var(--app-radius);
+  padding: 14px 16px;
+  overflow-x: auto;
+  font-family: Consolas, Monaco, 'Courier New', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre;
+  margin: 0;
+}
+
+/* 流式输出区：内容变化时不跳动 */
+.stream-box {
+  background: #1e1e1e;
+  color: #d4d4d4;
+  border-radius: var(--app-radius);
+  padding: 14px 16px;
+  min-height: 200px;
+  max-height: 460px;
+  overflow: auto;
+  font-family: Consolas, Monaco, 'Courier New', monospace;
+  font-size: 12.5px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.stream-cursor {
+  display: inline-block;
+  width: 8px;
+  height: 14px;
+  background: #409eff;
+  vertical-align: text-bottom;
+  animation: blink 1s step-start infinite;
+}
+
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+.page-card {
+  border-radius: var(--app-radius);
+  margin-bottom: 16px;
+}
+
+.stat-value {
+  font-size: 28px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.stat-label {
+  color: #909399;
+  font-size: 13px;
+  margin-top: 4px;
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 14px;
+}
+
+.flex-spacer {
+  flex: 1;
+}
+
+.empty-hint {
+  color: #909399;
+  text-align: center;
+  padding: 28px 0;
+  font-size: 13px;
+}

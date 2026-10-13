@@ -1,0 +1,251 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master, develop]
+  pull_request:
+  workflow_dispatch:
+
+# 同一分支的重复推送取消上一次运行，避免排队浪费
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # 测试全程使用 mock provider：不需要任何 API Key，CI 可离线跑
+  AIGOTUTOR_PROVIDER: mock
+  AIGOTUTOR_SECRET: ci-test-secret
+  AIGOTUTOR_LOG_LEVEL: WARNING
+
+jobs:
+  lint:
+    name: 代码质量（ruff）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 安装 ruff
+        run: python -m pip install --upgrade pip ruff
+
+      - name: ruff check
+        run: python -m ruff check . --output-format=github
+
+      - name: ruff format 检查
+        # 只检查格式是否一致，不改文件；若失败本地执行 `ruff format .`
+        run: python -m ruff format . --check
+
+  test:
+    name: 测试与覆盖率（Python ${{ matrix.python-version }}）
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 运行测试（含覆盖率阈值）
+        # 阈值 75%：当前实测 76%。设得比实测低一点，避免无关改动
+        # 造成门禁抖动；真正下降时会明确失败。
+        run: |
+          python -m pytest \
+            --cov=app \
+            --cov-report=term-missing \
+            --cov-report=xml \
+            --cov-fail-under=75
+
+      - name: 上传覆盖率报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.python-version }}
+          path: coverage.xml
+          if-no-files-found: warn
+
+  migrations:
+    name: 数据库迁移验收
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 迁移可独立重建结构（空库 -> head -> 回滚 -> head）
+        run: python scripts/check_migrations.py
+
+  judge:
+    name: 判题沙箱自测
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 安装依赖与编译工具链
+        # g++ 用于验证 C++ 判题路径；java 用于验证 Java 路径
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          sudo apt-get update
+          sudo apt-get install -y g++ default-jdk
+
+      - name: 判题后端自测（各 verdict）
+        run: python scripts/judge_selftest.py
+
+  frontend:
+    name: 前端构建
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: 安装依赖
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+
+      - name: 类型检查 + 构建
+        working-directory: web
+        run: pnpm build
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+          if-no-files-found: error
+
+  smoke:
+    name: 端到端冒烟（真实 HTTP）
+    runs-on: ubuntu-latest
+    needs: [test, frontend]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 下载前端产物
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+
+      - name: 灌入种子数据
+        run: python -m scripts.seed --reset
+
+      - name: 启动服务
+        run: |
+          python run.py > server.log 2>&1 &
+          # 等待端口就绪（最多 30 秒）
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8000/health > /dev/null; then
+              echo "服务已就绪（${i}s）"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "服务启动超时"; cat server.log; exit 1
+        env:
+          AIGOTUTOR_RATE_LIMIT: "0"
+
+      - name: 基础冒烟
+        run: python scripts/smoke.py --base http://127.0.0.1:8000
+
+      - name: 判题/流式/幂等验收
+        run: python scripts/smoke_batch_a.py --base http://127.0.0.1:8000
+
+      - name: 认证/限流/运营验收
+        run: python scripts/smoke_batch_c.py --base http://127.0.0.1:8000
+
+      - name: 管理后台验收
+        run: python scripts/smoke_admin.py --base http://127.0.0.1:8000
+
+      - name: 前端与静态托管验收
+        run: python scripts/smoke_web.py --base http://127.0.0.1:8000
+
+      - name: 失败时输出服务日志
+        if: failure()
+        run: cat server.log
+
+  loadtest:
+    name: 压测（并发正确性）
+    runs-on: ubuntu-latest
+    needs: [test]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 启动服务
+        run: |
+          python run.py > server.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8000/health > /dev/null; then exit 0; fi
+            sleep 1
+          done
+          cat server.log; exit 1
+        env:
+          AIGOTUTOR_RATE_LIMIT: "0"
+
+      - name: 并发写与任务压测
+        # 断言：无 5xx、无 database is locked、无连接错误
+        run: |
+          python scripts/loadtest.py \
+            --base http://127.0.0.1:8000 \
+            --users 10 --duration 8 \
+            --scenario read,write,mixed,pipeline
+
+      - name: 失败时输出服务日志
+        if: failure()
+        run: cat server.log

@@ -1,0 +1,55 @@
+# ---------------------------------------------------------------- Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# ---------------------------------------------------------------- 测试与工具
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+
+# ---------------------------------------------------------------- 数据与日志
+# 本地数据库与日志绝不入库（含用户数据与可能的密钥）
+data/
+logs/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.log
+
+# ---------------------------------------------------------------- 环境配置
+# .env 含密钥；.env.example 是模板，必须入库
+.env
+.env.*
+!.env.example
+
+# ---------------------------------------------------------------- 前端
+web/node_modules/
+web/dist/
+web/dist-ssr/
+web/.vite/
+web/*.local
+web/.pnpm-store/
+
+# ---------------------------------------------------------------- 编辑器与系统
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini

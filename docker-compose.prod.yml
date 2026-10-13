@@ -1,0 +1,91 @@
+# 生产用 compose：应用 + 强隔离判题 + 可选反向代理。
+#
+# 与开发版的三个关键区别：
+#   1. 判题走 Docker 后端（容器内再起容器），用户代码不接触应用容器；
+#   2. 应用容器不挂载 docker.sock 的写权限以外的东西，且判题目录用 tmpfs；
+#   3. 限流开启、JSON 日志、非 root 运行。
+#
+# 用法：
+#   cp .env.example .env    # 填写密钥
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# ⚠️ 判题隔离说明：
+#   Docker 后端需要应用容器访问宿主 Docker daemon（挂载 docker.sock）。
+#   这本身是一个权限提升面 —— 能访问 daemon 就几乎等于能控制宿主。
+#   因此生产部署建议二选一：
+#     A. 把判题拆到独立主机/独立 daemon，应用只通过内网调用（最安全）；
+#     B. 接受 docker.sock 挂载，但把应用容器也当作高信任组件，并限制其网络出口。
+#   本文件采用 B 并在注释中标注风险，A 方案见 README 的部署章节。
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    image: aigotutor:prod
+    container_name: aigotutor-app
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      RELOAD: "0"
+      AIGOTUTOR_LOG_JSON: "1"
+      AIGOTUTOR_LOG_LEVEL: INFO
+      AIGOTUTOR_RATE_LIMIT: "1"
+      AIGOTUTOR_RATE_LIMIT_RPM: "120"
+      AIGOTUTOR_MAX_PIPELINES: "8"
+      AIGOTUTOR_SERVE_WEB: "1"
+      # 生产必须用 Docker 判题后端（强隔离）
+      AIGOTUTOR_JUDGE_BACKEND: docker
+      AIGOTUTOR_JUDGE_IMAGE: python:3.13-slim
+      AIGOTUTOR_JUDGE_TIMEOUT: "10"
+      AIGOTUTOR_JUDGE_MEMORY: "256"
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      # 判题容器需要创建兄弟容器，因此需要 docker CLI 与 daemon 访问
+      - /var/run/docker.sock:/var/run/docker.sock
+    tmpfs:
+      # 判题临时目录放内存：更快，且容器销毁即消失，不留残留
+      - /tmp:size=512m,mode=1777
+    deploy:
+      resources:
+        limits:
+          # 给判题留出余量：并发判题会各自 fork 子进程
+          cpus: "2.0"
+          memory: 2g
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # 反向代理：终止 TLS、限流前置、静态资源缓存。
+  # 不需要 HTTPS 时可整段删掉。
+  caddy:
+    image: caddy:2-alpine
+    container_name: aigotutor-proxy
+    depends_on:
+      app:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:

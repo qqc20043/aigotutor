@@ -1,0 +1,43 @@
+# 开发用 compose：单容器 + 源码挂载，改代码即生效（配合 RELOAD=1）。
+#
+# 用法：
+#   docker compose up --build
+#   浏览器打开 http://127.0.0.1:8000
+#
+# 注意：判题后端用 subprocess（容器内本机执行）。生产环境请改用
+# docker-compose.prod.yml，那里用独立判题容器 + Docker 后端实现强隔离。
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    image: aigotutor:dev
+    container_name: aigotutor-dev
+    ports:
+      - "8000:8000"
+    environment:
+      # 开发期：热重载 + 人类可读日志 + 关闭限流（方便连点调试）
+      RELOAD: "1"
+      AIGOTUTOR_LOG_JSON: "0"
+      AIGOTUTOR_LOG_LEVEL: INFO
+      AIGOTUTOR_RATE_LIMIT: "0"
+      # 默认 mock：无需任何 API Key 即可跑通全链路
+      AIGOTUTOR_PROVIDER: mock
+      AIGOTUTOR_MODEL: mock-1
+      AIGOTUTOR_SECRET: dev-only-change-me
+      AIGOTUTOR_JUDGE_BACKEND: subprocess
+    volumes:
+      # 源码挂载实现热重载；数据与日志持久化到宿主机
+      - ./app:/app/app:ro
+      - ./scripts:/app/scripts:ro
+      - ./data:/app/data
+      - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
