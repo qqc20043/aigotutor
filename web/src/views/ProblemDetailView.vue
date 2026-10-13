@@ -51,6 +51,45 @@ const streamAgentName = ref('solution')
 let abortStream: (() => void) | null = null
 let abortTask: (() => void) | null = null
 
+/** 渐进式提示面板（强度由该题知识点掌握度自动决定） */
+const hintLoading = ref(false)
+const hint = ref<{
+  strength: string
+  hints: string[]
+  key_insight: string
+  next_step: string
+  strength_reason: string
+  degraded?: boolean
+  memory_tokens?: number
+} | null>(null)
+
+/** 强度档位展示：让用户明白"为什么给我这个强度的提示" */
+const HINT_STRENGTH_META: Record<string, { label: string; type: 'info' | 'warning' | 'danger' }> = {
+  direction: { label: '方向提示', type: 'info' },
+  key_observation: { label: '关键观察', type: 'warning' },
+  pseudocode: { label: '步骤骨架', type: 'danger' },
+}
+
+const hintMeta = computed(() =>
+  hint.value ? HINT_STRENGTH_META[hint.value.strength] || HINT_STRENGTH_META.key_observation : null,
+)
+
+async function loadHint() {
+  hintLoading.value = true
+  try {
+    const res = await problemApi.hint(problemId.value, {
+      language: code.language,
+      current_code: code.source,
+    })
+    hint.value = (res.data || null) as typeof hint.value
+    if (!hint.value) ElMessage.warning('未获取到提示')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || '获取提示失败')
+  } finally {
+    hintLoading.value = false
+  }
+}
+
 const passedRatio = computed(() => {
   const s = result.value?.submission
   if (!s || !s.total_cases) return 0
@@ -407,6 +446,9 @@ onBeforeUnmount(() => {
             <el-button type="primary" :loading="submitting" @click="submit">
               <el-icon><VideoPlay /></el-icon> 提交判题
             </el-button>
+            <el-button :loading="hintLoading" @click="loadHint">
+              <el-icon><QuestionFilled /></el-icon> 我要提示
+            </el-button>
             <el-button :disabled="!result" @click="runPipeline">
               <el-icon><MagicStick /></el-icon> 跑完整 Agent 链路
             </el-button>
@@ -416,6 +458,39 @@ onBeforeUnmount(() => {
               {{ streaming ? '停止流式' : '流式生成题解' }}
             </el-button>
           </div>
+        </el-card>
+
+        <!-- 渐进式提示（强度由掌握度自动决定） -->
+        <el-card v-if="hint" class="page-card" shadow="never">
+          <template #header>
+            <div style="display: flex; align-items: center; gap: 10px">
+              <span>解题提示</span>
+              <el-tag v-if="hintMeta" :type="hintMeta.type" size="small" effect="plain">
+                {{ hintMeta.label }}
+              </el-tag>
+              <el-tag v-if="hint.degraded" type="info" size="small" effect="plain">规则引擎</el-tag>
+              <div class="flex-spacer" />
+              <el-button link size="small" @click="hint = null">收起</el-button>
+            </div>
+          </template>
+
+          <el-alert type="info" :closable="false" style="margin-bottom: 12px">
+            <template #default>
+              <div style="font-size: 13px">{{ hint.strength_reason }}</div>
+              <div v-if="hint.memory_tokens" style="font-size: 12px; color: #909399; margin-top: 4px">
+                已注入学习记忆（约 {{ hint.memory_tokens }} token 的聚合结论，非完整历史）
+              </div>
+            </template>
+          </el-alert>
+
+          <ol class="hint-list">
+            <li v-for="(h, i) in hint.hints" :key="i">{{ h }}</li>
+          </ol>
+
+          <el-descriptions :column="1" border size="small" style="margin-top: 12px">
+            <el-descriptions-item label="突破口">{{ hint.key_insight }}</el-descriptions-item>
+            <el-descriptions-item label="下一步">{{ hint.next_step }}</el-descriptions-item>
+          </el-descriptions>
         </el-card>
 
         <!-- 判题结果 -->
@@ -600,5 +675,16 @@ onBeforeUnmount(() => {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+
+/* 提示列表：按强度递进展示，行距放宽便于逐条阅读 */
+.hint-list {
+  margin: 0;
+  padding-left: 22px;
+  line-height: 1.9;
+}
+
+.hint-list li {
+  margin-bottom: 6px;
 }
 </style>

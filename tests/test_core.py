@@ -270,7 +270,8 @@ async def test_pipeline_survives_when_every_agent_fails(break_llm):
         ],
         mastery_scores={"模拟": 30.0},
     )
-    assert summary["agent_count"] == 5
+    assert summary["agent_count"] == len(summary["agents"])  # 实际执行的 Agent 数
+    assert summary["core_agent_total"] == 5  # 简历声明的核心 Agent 数
     assert summary["failed"] == []  # 全部降级成功，没有彻底失败
     assert summary["degraded"]  # 但确实降级了
     assert "judge" in summary["agents"]
@@ -447,8 +448,15 @@ def test_cost_router_uses_llm_for_hard_problem():
 
 
 def test_agent_registry_matches_resume_claim():
-    """简历主张：5 个 Agent + 统一基类。"""
-    assert len(CORE_AGENTS) == 5
+    """简历主张：5 个 Agent（按职责划分）+ 统一基类。
+
+    5 个核心 Agent 必须与简历点名的职责一一对应：
+      路线规划 / 题目推荐 / 解题提示 / 掌握度评估 / 复习队列优先
+    """
+    assert len(CORE_AGENTS) == 5, f"简历声明 5 个核心 Agent，实际 {len(CORE_AGENTS)}"
+    assert set(CORE_AGENTS) == {"roadmap", "recommend", "hint", "mastery", "review"}, (
+        "核心 Agent 必须精确对应简历点名的五项职责"
+    )
     assert set(CORE_AGENTS) <= set(AGENTS)
     for name, agent in AGENTS.items():
         assert issubclass(agent.__class__, BaseAgent), f"{name} 未继承 BaseAgent"

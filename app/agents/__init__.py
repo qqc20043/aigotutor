@@ -13,9 +13,12 @@ from __future__ import annotations
 from typing import Any
 
 from .difficulty import DifficultyAgent
+from .hint import HintAgent
 from .judge import JudgeAgent
 from .mastery import MasteryAgent
+from .quality import QualityAgent
 from .recommend import RecommendAgent
+from .review import ReviewAgent
 from .roadmap import RoadmapAgent
 from .solution import SolutionAgent
 
@@ -26,11 +29,24 @@ AGENTS: dict[str, Any] = {
     "judge": JudgeAgent(),
     "mastery": MasteryAgent(),
     "roadmap": RoadmapAgent(),
+    "hint": HintAgent(),
+    "review": ReviewAgent(),
+    "quality": QualityAgent(),
 }
 
-# 简历里说的"5 个 Agent"：推荐/题解/评测/学习状态/路线图；
-# difficulty 作为题目标注链路的一部分，不算在 5 个之内。
-CORE_AGENTS = ["recommend", "solution", "judge", "mastery", "roadmap"]
+# 简历点名的 5 个 Agent（按职责划分），对照关系：
+#   roadmap   -> 路线规划
+#   recommend -> 题目推荐
+#   hint      -> 解题提示
+#   mastery   -> 掌握度评估
+#   review    -> 复习队列优先
+CORE_AGENTS = ["roadmap", "recommend", "hint", "mastery", "review"]
+
+# 支撑型 Agent：不在这 5 个之内，但被链路依赖。
+#   judge      -> 判错归因（提交后触发）
+#   solution   -> 题解生成（按需）
+#   difficulty -> 两阶段难度标注（出题/导入时触发）
+SUPPORT_AGENTS = ["judge", "solution", "difficulty", "quality"]
 
 
 def get_agent(name: str):
@@ -85,9 +101,12 @@ __all__ = [
     "AGENTS",
     "CORE_AGENTS",
     "DifficultyAgent",
+    "HintAgent",
     "JudgeAgent",
     "MasteryAgent",
+    "QualityAgent",
     "RecommendAgent",
+    "ReviewAgent",
     "RoadmapAgent",
     "SolutionAgent",
     "get_agent",

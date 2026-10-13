@@ -279,6 +279,52 @@ async def recent_submissions(db: AsyncSession, user_id: str, limit: int = 200) -
     return list((await db.execute(stmt)).scalars().all())
 
 
+async def problem_attempt_stats(db: AsyncSession, user_id: str, problem_id: str) -> dict[str, Any]:
+    """该用户在某题上的尝试统计：次数 + 通过数 + 最近判定。
+
+    用途：提示强度的"样本不足时保守升档"需要知道用户做过几次 —— 只做过
+    1 次的题，掌握度数字本身不可信，此时给弱提示会让新手卡死。
+
+    用聚合查询而不是取全部记录再数：题目历史提交可能很多，这里只需要标量。
+    """
+    total = (
+        await db.execute(
+            select(func.count())
+            .select_from(Submission)
+            .where(Submission.user_id == user_id, Submission.problem_id == problem_id)
+        )
+    ).scalar_one()
+    ac_count = (
+        await db.execute(
+            select(func.count())
+            .select_from(Submission)
+            .where(
+                Submission.user_id == user_id,
+                Submission.problem_id == problem_id,
+                Submission.verdict == "AC",
+            )
+        )
+    ).scalar_one()
+    last = (
+        (
+            await db.execute(
+                select(Submission.verdict)
+                .where(Submission.user_id == user_id, Submission.problem_id == problem_id)
+                .order_by(Submission.created_at.desc())
+                .limit(1)
+            )
+        )
+        .scalars()
+        .first()
+    )
+    return {
+        "attempts": int(total or 0),
+        "ac_count": int(ac_count or 0),
+        "last_verdict": str(last or ""),
+        "solved": bool(ac_count),
+    }
+
+
 async def add_review(db: AsyncSession, data: dict[str, Any]) -> Review:
     review = Review(
         submission_id=data["submission_id"],

@@ -6,7 +6,8 @@ import json
 
 from fastapi import APIRouter, HTTPException, Query, status
 
-from ..core.pipeline import annotate_problem, route
+from ..core.memory import estimate_tokens, memory_block_for
+from ..core.pipeline import annotate_problem, generate_hint, route
 from ..deps import DbSession, ModelConfigDep, PageDep, UserDep
 from ..judge_service import (
     add_testcase,
@@ -22,6 +23,8 @@ from ..services import (
     get_problem_tags,
     list_problems,
     list_tags,
+    mastery_scores_map,
+    problem_attempt_stats,
     random_problem,
 )
 from .schemas import (
@@ -167,6 +170,64 @@ async def problem_detail(problem_id: str, db: DbSession, user: UserDep):
         constraints=problem.constraints,
     )
     return ProblemDetail(**detail)
+
+
+@router.post("/{problem_id}/hint", response_model=dict)
+async def problem_hint(
+    problem_id: str,
+    db: DbSession,
+    user: UserDep,
+    cfg: ModelConfigDep,
+    language: str = Query(default="python", max_length=16),
+    current_code: str = Query(
+        default="", max_length=8000, description="用户当前代码，用于定位卡点"
+    ),
+):
+    """渐进式解题提示：强度由该题知识点掌握度自动决定。
+
+    强度三档（掌握度越低给越强）：
+      * direction        —— 只点方向（掌握度 >= 65 或样本充足）
+      * key_observation  —— 点出关键观察（掌握度 40-65）
+      * pseudocode       —— 给出伪代码级骨架（掌握度 < 40 或首次接触）
+
+    强度在服务端算定后写进 prompt，模型无权升降档 —— 这样同一用户在同一
+    掌握度下拿到的提示强度是可复现、可测试的。
+    """
+    problem = await get_problem(db, problem_id)
+    if problem is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "题目不存在")
+
+    tag_map = await get_problem_tags(db, [problem.id])
+    tags = [t["name"] for t in tag_map.get(problem.id, [])]
+
+    # 该题知识点掌握度：取最弱的一项（最短板决定该给多强的提示）
+    mastery = await mastery_scores_map(db, user.id)
+    weakest = min(float(mastery.get(t, 50.0)) for t in tags) if tags and mastery else 50.0
+
+    # 该题历史提交次数：样本不足时强度会保守升档（见 rules.hint_strength_for）
+    stats = await problem_attempt_stats(db, user.id, problem.id)
+
+    # 学习记忆清单：让提示能引用用户的历史薄弱点（而不是每次从零开始）
+    memory = await memory_block_for(db, user.id)
+
+    result = await generate_hint(
+        user.id,
+        cfg,
+        problem={
+            "title": problem.title,
+            "statement": problem.statement,
+            "tags": tags,
+            "difficulty": problem.difficulty,
+            "language": language,
+        },
+        mastery_score=weakest,
+        attempts=stats["attempts"],
+        current_code=current_code,
+        verdict=stats["last_verdict"],
+        memory=memory,
+    )
+    result["memory_tokens"] = estimate_tokens(memory) if memory else 0
+    return result
 
 
 @router.post("", response_model=ProblemOut, status_code=status.HTTP_201_CREATED)

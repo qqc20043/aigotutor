@@ -18,6 +18,37 @@ const dueCount = ref(0)
 const marking = ref<string>('')
 const lastResult = ref<ReviewMarkResult | null>(null)
 
+/** 复习队列优先 Agent：在客观到期队列之上给出"先做哪个"的推荐顺序 */
+const priorityLoading = ref(false)
+const priority = ref<{
+  ordered: Array<{ problem_id: string; title: string; order: number; reason: string; urgency: string }>
+  strategy: string
+  degraded?: boolean
+} | null>(null)
+const timeBudget = ref(60)
+
+async function loadPriority() {
+  priorityLoading.value = true
+  try {
+    const res = await reviewApi.priority({ limit: 20, time_budget_minutes: timeBudget.value })
+    const data = res.data
+    if (!data || !data.ordered) {
+      priority.value = null
+      ElMessage.info(res.message || '当前没有到期的复习项')
+    } else {
+      priority.value = {
+        ordered: data.ordered,
+        strategy: data.strategy,
+        degraded: res.degraded,
+      }
+    }
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || '获取推荐顺序失败')
+  } finally {
+    priorityLoading.value = false
+  }
+}
+
 const forecastEl = ref<HTMLDivElement | null>(null)
 const forecastChart = shallowRef<echarts.ECharts | null>(null)
 
@@ -119,6 +150,19 @@ onMounted(() => {
         <el-statistic title="保持率低于 60%" :value="summary.critical" style="margin-right: 28px" />
         <el-statistic title="逾期超 3 天" :value="summary.overdue" />
         <div class="flex-spacer" />
+        <el-input-number
+          v-model="timeBudget"
+          :min="0"
+          :max="600"
+          :step="15"
+          size="small"
+          controls-position="right"
+          style="width: 130px"
+          title="今日时间预算（分钟），0 表示不限"
+        />
+        <el-button :loading="priorityLoading" @click="loadPriority">
+          <el-icon><Sort /></el-icon> 今日先做哪几道
+        </el-button>
         <el-switch
           v-model="dueOnly"
           active-text="只看已到期"
@@ -128,6 +172,47 @@ onMounted(() => {
           <el-icon><Refresh /></el-icon> 刷新
         </el-button>
       </div>
+    </el-card>
+
+    <!-- 复习队列优先 Agent：按学习收益重排 + 解释为什么是这个顺序 -->
+    <el-card v-if="priority" class="page-card" shadow="never">
+      <template #header>
+        <div style="display: flex; align-items: center; gap: 10px">
+          <span>今日推荐顺序</span>
+          <el-tag v-if="priority.degraded" type="info" size="small" effect="plain">规则引擎</el-tag>
+          <div class="flex-spacer" />
+          <el-button link size="small" @click="priority = null">收起</el-button>
+        </div>
+      </template>
+
+      <el-alert type="success" :closable="false" style="margin-bottom: 12px">
+        {{ priority.strategy }}
+      </el-alert>
+
+      <el-table :data="priority.ordered" size="small" stripe>
+        <el-table-column label="#" width="60">
+          <template #default="{ row }">
+            <el-tag size="small" :type="row.order === 1 ? 'danger' : row.order <= 3 ? 'warning' : 'info'">
+              {{ row.order }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="题目" min-width="160">
+          <template #default="{ row }">
+            <span class="title-link" @click="goPractice(row.problem_id)">{{ row.title || row.problem_id }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="紧迫度" width="120">
+          <template #default="{ row }">
+            <span class="stat-label">{{ row.urgency }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="为什么排这里" min-width="240">
+          <template #default="{ row }">
+            <span style="font-size: 13px">{{ row.reason }}</span>
+          </template>
+        </el-table-column>
+      </el-table>
     </el-card>
 
     <el-row :gutter="16">

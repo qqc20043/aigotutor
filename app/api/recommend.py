@@ -7,6 +7,7 @@ from datetime import datetime
 from fastapi import APIRouter
 
 from ..core.fsrs import overdue_days
+from ..core.memory import memory_block_for
 from ..core.pipeline import build_roadmap, recommend_next
 from ..deps import DbSession, ModelConfigDep, UserDep
 from ..services import (
@@ -60,6 +61,7 @@ async def recommend_next_api(
 
     mastery = await mastery_scores_map(db, user.id)
     weak = [m["tag"] for m in (await get_mastery(db, user.id))[:3]]
+    memory = await memory_block_for(db, user.id)
     result = await recommend_next(
         user.id,
         cfg,
@@ -69,6 +71,7 @@ async def recommend_next_api(
         target_score=target_score,
         weak_tags=weak,
         user_level=user.level,
+        memory=memory,
     )
     await log_agent_run(db, {**result, "user_id": user.id, "agent": "recommend"})
     data = result.get("data") or {}

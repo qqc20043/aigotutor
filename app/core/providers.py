@@ -145,6 +145,59 @@ class MockProvider:
             ],
             "rationale": "按标签先修关系拓扑排序，避开当前掌握度低于 40 的跳跃点。",
         },
+        "HintOut": {
+            "strength": "key_observation",
+            "hints": [
+                "先确认数据范围：n 到 1e5 时朴素做法会超时，需要更优的扫描方式。",
+                "关键观察：按左端点排序后，重叠区间在扫描中必然连续，可用一个变量维护当前右界。",
+            ],
+            "key_insight": "排序后重叠区间连续出现，因此一次线性扫描即可完成合并。",
+            "next_step": "先手算一组含「完全包含」的样例（如 [1,10] 与 [2,3]），确认合并时的右界取值。",
+            "strength_reason": "该知识点掌握度 52 分（4 次提交），据此给出关键观察级提示。",
+            "confidence": 0.78,
+        },
+        "ReviewPriorityOut": {
+            "ordered": [
+                {
+                    "problem_id": "MOCK-R0001",
+                    "title": "两数之和（Mock 复习）",
+                    "order": 1,
+                    "reason": "逾期 6.8 天、保留率仅 49%，「模拟」掌握度 42 分，遗忘风险最高。",
+                    "urgency": "逾期 6.8 天",
+                },
+                {
+                    "problem_id": "MOCK-R0002",
+                    "title": "区间合并（Mock 复习）",
+                    "order": 2,
+                    "reason": "逾期 5.8 天、已遗忘 2 次，反复出错说明该性质未真正掌握。",
+                    "urgency": "逾期 5.8 天",
+                },
+            ],
+            "strategy": "先处理遗忘最严重的两题（保留率低于 60%），再按掌握度缺口推进；按每题 15 分钟估算，共 30 分钟可完成。",
+            "confidence": 0.8,
+        },
+        # 兜底 fixture：当 prompt 不是可解析的 JSON 时（如单测直接传 "x"），
+        # 通用生成器会把 dimensions 造成字符串数组而违反 schema —— 这里给出
+        # 一份结构正确的静态兜底，与其它 Agent 的处理方式一致。
+        "QualityOut": {
+            "score": 72.0,
+            "grade": "良好",
+            "dimensions": [
+                {
+                    "name": "可读性",
+                    "score": 75.0,
+                    "comment": "Mock：命名清晰，控制流层级适中。",
+                },
+                {
+                    "name": "边界处理",
+                    "score": 68.0,
+                    "comment": "Mock：已处理空输入，建议补极值用例。",
+                },
+            ],
+            "summary": "Mock 评分：结构清晰、边界基本覆盖，属于良好水平。",
+            "top_improvement": "把最深的两层嵌套抽成独立函数，降低阅读负担。",
+            "confidence": 0.75,
+        },
     }
 
     def _fixture_for(self, schema: dict[str, Any], user: str = "") -> Any:
@@ -164,6 +217,10 @@ class MockProvider:
             return self._recommend_from_prompt(payload)
         if title == "JudgeOut" and payload:
             return self._judge_from_prompt(payload)
+        if title == "HintOut" and payload:
+            return self._hint_from_prompt(payload)
+        if title == "QualityOut" and payload:
+            return self._quality_from_prompt(payload)
         if title in ("MasteryOut", "RoadmapOut") and payload.get("rule_baseline"):
             baseline = payload["rule_baseline"]
             if isinstance(baseline, dict) and baseline:
@@ -181,11 +238,32 @@ class MockProvider:
     # ---------------------------------------------------- prompt 解析与派生
     @staticmethod
     def _parse_payload(user: str) -> dict[str, Any]:
+        """从 user prompt 里解析出结构化 payload。
+
+        必须容忍**记忆前缀**：BaseAgent.with_memory() 会把学习记忆清单拼在
+        prompt 前面，此时 prompt 不再以 "{" 开头，直接 json.loads 会失败并
+        静默回退到静态 FIXTURES —— 结果是 mock 忽略了本次的真实上下文
+        （真实踩到：hint 返回的强度依据与算定强度不一致）。
+
+        策略：先直接解析；失败则从第一个 "{" 起截取到最后一个 "}" 再解析。
+        """
         try:
             data = json.loads(user)
-            return data if isinstance(data, dict) else {}
+            if isinstance(data, dict):
+                return data
         except (json.JSONDecodeError, TypeError):
-            return {}
+            pass
+
+        # 退化路径：剥离前缀（记忆块）与后缀（可能的说明文字）
+        start, end = user.find("{"), user.rfind("}")
+        if start >= 0 and end > start:
+            try:
+                data = json.loads(user[start : end + 1])
+                if isinstance(data, dict):
+                    return data
+            except (json.JSONDecodeError, TypeError):
+                pass
+        return {}
 
     def _difficulty_from_prompt(self, payload: dict[str, Any]) -> dict[str, Any]:
         """在规则窗口内做精细校准。
@@ -300,6 +378,87 @@ class MockProvider:
             "explanation": f"Mock 归因：{explanation}",
             "fix_suggestion": fix,
             "confidence": 0.8,
+        }
+
+    def _hint_from_prompt(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """按 prompt 里已算定的强度生成提示。
+
+        注意：强度不是 mock 自己选的 —— 它来自 prompt（规则层算好后写入）。
+        mock 的职责只是"在该强度下产出合规内容"，这与真实模型的行为一致：
+        策略归规则、表达归模型。若 mock 自行改强度，就会掩盖强度逻辑的 bug。
+        """
+        from ..core.rules import HINT_COUNT_BY_STRENGTH
+
+        strength = str(payload.get("strength", "key_observation"))
+        if strength not in HINT_COUNT_BY_STRENGTH:
+            strength = "key_observation"
+        count = int(payload.get("hint_count") or HINT_COUNT_BY_STRENGTH[strength])
+        tags = payload.get("tags") or []
+        tag_text = "、".join(str(t) for t in tags[:3]) if tags else "本题知识点"
+
+        pool = {
+            "direction": [f"先想清楚{tag_text}这一步的时间复杂度上限，再决定用什么结构。"],
+            "key_observation": [
+                f"关键观察：{tag_text}类问题往往存在一个可复用的单调性质。",
+                "把边界条件单独列出来逐条确认（空输入、单元素、完全包含）。",
+            ],
+            "pseudocode": [
+                f"步骤 1：读入数据并按{tag_text}所需结构整理。",
+                "步骤 2：主循环中维护当前状态，判断何时更新答案。",
+                "步骤 3：输出并用样例与边界各验一遍。",
+            ],
+        }[strength]
+
+        return {
+            "strength": strength,
+            "hints": pool[:count],
+            "key_insight": f"Mock 提示：突破口在「{tag_text}」的性质识别（未给出完整解法）。",
+            "next_step": "按第一条提示动手写第一版，跑样例看差在哪。",
+            "strength_reason": str(
+                payload.get("strength_reason") or "Mock：强度由掌握度规则层决定。"
+            ),
+            "confidence": 0.75,
+        }
+
+    def _quality_from_prompt(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """两阶段评分：mock 代表"没有额外语义信息的模型"，因此**遵从规则基线**。
+
+        与难度标注同样的设计决策：无信息的校准层必须恒等映射，不能叠加扰动
+        —— 否则评分的可复现性会被 mock 破坏，Kappa 之类的指标也失去意义。
+        真实模型读代码语义时才有额外信息可用来移动分数。
+        """
+        from ..core.rules import quality_grade_of
+
+        baseline = float(payload.get("rule_baseline", 60.0))
+        rng = payload.get("allowed_range") or [baseline, baseline]
+        lo, hi = float(rng[0]), float(rng[1])
+        score = max(lo, min(hi, baseline))
+        metrics = payload.get("rule_metrics") or {}
+        dims = payload.get("required_dimensions") or ["正确性", "可读性", "效率", "边界处理"]
+
+        comments = {
+            "正确性": "全部用例已通过；未检出依赖未定义行为的写法。",
+            "可读性": (
+                f"最大嵌套 {int(metrics.get('max_indent', 0))} 层，"
+                f"短标识符占比 {float(metrics.get('short_ident_ratio', 0)):.0%}。"
+            ),
+            "效率": "复杂度与题目数据范围匹配（依规则指标推断）。",
+            "边界处理": f"检出 {int(metrics.get('boundary_hints', 0))} 处显式判断/异常处理。",
+        }
+        return {
+            "score": round(score, 2),
+            "grade": quality_grade_of(score),
+            "dimensions": [
+                {
+                    "name": str(name),
+                    "score": round(score, 1),
+                    "comment": comments.get(str(name), "Mock：按规则指标评估。"),
+                }
+                for name in dims[:6]
+            ],
+            "summary": f"Mock 评分：沿用规则基线 {baseline:.1f} 分（无额外语义信息，不做修正）。",
+            "top_improvement": "把嵌套层级控制在 3 层以内，并给单字母变量改成有含义的名字。",
+            "confidence": 0.7,
         }
 
     def _fake_value(self, key: str, spec: dict[str, Any]) -> Any:

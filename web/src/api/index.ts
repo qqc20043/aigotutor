@@ -99,6 +99,12 @@ export const problemApi = {
     http.delete(`/problems/${id}/testcases/${caseId}`).then((r) => r.data),
 
   judgeBackend: () => http.get<JudgeBackendInfo>('/judge').then((r) => r.data),
+
+  /** 渐进式提示：强度由该题知识点掌握度自动决定（服务端算定，模型无权升降档） */
+  hint: (id: string, params: { language?: string; current_code?: string } = {}) =>
+    http
+      .post<AgentRunResult & { memory_tokens?: number }>(`/problems/${id}/hint`, null, { params })
+      .then((r) => r.data),
 }
 
 // ------------------------------------------------------------ ③ 提交与评测
@@ -158,6 +164,18 @@ export const reviewApi = {
 
   mark: (problem_id: string, rating: number) =>
     http.post<ReviewMarkResult>('/review/mark', { problem_id, rating }).then((r) => r.data),
+
+  /**
+   * 复习队列优先 Agent：在 FSRS 已筛出的到期项里决定"先做哪个"并解释原因。
+   * 与 queue 的分工：queue 是按到期时间排的客观队列，priority 是按学习收益
+   * 重排后的推荐顺序 —— 两者同源，前端可并排展示差异。
+   */
+  priority: (params: { limit?: number; time_budget_minutes?: number } = {}) =>
+    http
+      .get<
+        AgentRunResult & { due_count: number; message?: string }
+      >('/review/priority', { params })
+      .then((r) => r.data),
 }
 
 // -------------------------------------------------------------- ⑥ 掌握度

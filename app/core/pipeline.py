@@ -22,7 +22,17 @@ from ..config import settings
 from ..schemas import SCHEMA_BY_AGENT
 from .agent import AgentContext, AgentResult
 from .cache import cache_stats
-from .rules import rule_difficulty, rule_judge, rule_mastery, rule_recommend, rule_roadmap
+from .rules import (
+    quality_grade_of,
+    rule_difficulty,
+    rule_hint,
+    rule_judge,
+    rule_mastery,
+    rule_quality,
+    rule_recommend,
+    rule_review_priority,
+    rule_roadmap,
+)
 
 # 这些键属于 AgentContext 自身的字段，不能落进 data，否则会被 Agent 当成业务数据
 _RESERVED_KEYS = ("user_id", "provider", "model", "base_url", "api_key", "temperature")
@@ -35,6 +45,7 @@ def _ctx(
     *,
     task_id: str = "",
     use_cache: bool = True,
+    memory: str = "",
 ) -> AgentContext:
     """构造 AgentContext。
 
@@ -42,6 +53,10 @@ def _ctx(
     字典传进来，其中常含 user_id / provider / model 等同名字段；用 ** 展开会在
     调用时立刻抛 "got multiple values for argument 'user_id'"，函数体内的 pop
     根本来不及执行。这里统一剥离保留键，其余进 data。
+
+    memory 是**可选**的记忆清单：由调用方（API 层）从 core.memory 预聚合后传入。
+    pipeline 层不主动查库 —— 它应当保持"纯编排"职责，数据库访问留在 service
+    与 API 层，这样单测可以直接构造 ctx 而不需要数据库。
     """
     data = dict(payload or {})
     for reserved in _RESERVED_KEYS:
@@ -55,6 +70,7 @@ def _ctx(
         temperature=float(config.get("temperature", 0.2)),
         task_id=task_id,
         use_cache=use_cache,
+        memory=memory,
         data=data,
     )
 
@@ -97,6 +113,7 @@ async def recommend_next(
     target_score: float = 55.0,
     weak_tags: list[str] | None = None,
     user_level: int = 3,
+    memory: str = "",
 ) -> dict[str, Any]:
     ctx = _ctx(
         user_id,
@@ -109,6 +126,7 @@ async def recommend_next(
             "weak_tags": weak_tags or [],
             "user_level": user_level,
         },
+        memory=memory,
     )
     result = await run_agent("recommend", ctx)
     out = result.data or rule_recommend(ctx.data)
@@ -192,6 +210,148 @@ async def build_roadmap(
     payload = result.to_dict()
     payload["data"] = out.model_dump()
     payload["rule_baseline"] = baseline.model_dump()
+    return payload
+
+
+async def generate_hint(
+    user_id: str,
+    config: dict[str, Any],
+    *,
+    problem: dict[str, Any],
+    mastery_score: float,
+    attempts: int = 0,
+    current_code: str = "",
+    verdict: str = "",
+    memory: str = "",
+) -> dict[str, Any]:
+    """渐进式提示：强度由规则层按掌握度算定，模型只负责在该强度下写内容。
+
+    强度算定放在这里（而不是让 Agent 自己判断）是为了让它**可测试**：
+    pipeline 层注入 strength / strength_reason，Agent 与 Mock 都只能遵从。
+    """
+    from ..core.rules import hint_strength_for
+
+    strength, reason = hint_strength_for(mastery_score, attempts)
+    ctx = _ctx(
+        user_id,
+        config,
+        {
+            "title": problem.get("title", ""),
+            "statement": problem.get("statement", ""),
+            "tags": problem.get("tags", []),
+            "difficulty": problem.get("difficulty", ""),
+            "language": problem.get("language", "python"),
+            "mastery_score": mastery_score,
+            "attempts": attempts,
+            "current_code": current_code,
+            "verdict": verdict,
+            # 强度已算定：写进 prompt 供模型与 mock 遵从
+            "strength": strength,
+            "strength_reason": reason,
+        },
+        memory=memory,
+    )
+    # 缓存盐带强度与掌握度：同一题在不同掌握度下必须给出不同强度的提示
+    ctx.data["cache_salt"] = f"{strength}:{round(mastery_score, 1)}:{attempts}"
+    result = await run_agent("hint", ctx)
+    out = result.data or rule_hint(ctx.data)
+    payload = result.to_dict()
+    payload["data"] = out.model_dump()
+    return payload
+
+
+async def prioritize_review(
+    user_id: str,
+    config: dict[str, Any],
+    *,
+    candidates: list[dict[str, Any]],
+    time_budget_minutes: int = 0,
+    daily_goal: int = 3,
+    weak_tags: list[str] | None = None,
+    memory: str = "",
+) -> dict[str, Any]:
+    """复习队列优先：在 FSRS 已筛出的到期项里决定"先做哪个"并解释原因。"""
+    baseline = rule_review_priority(
+        {
+            "candidates": candidates,
+            "time_budget_minutes": time_budget_minutes,
+            "daily_goal": daily_goal,
+        }
+    )
+    ctx = _ctx(
+        user_id,
+        config,
+        {
+            "candidates": candidates,
+            "time_budget_minutes": time_budget_minutes,
+            "daily_goal": daily_goal,
+            "weak_tags": weak_tags or [],
+            "rule_baseline_order": [i.problem_id for i in baseline.ordered],
+        },
+        memory=memory,
+    )
+    # 缓存盐用候选指纹：候选集变了必须重排
+    ctx.data["cache_salt"] = str(
+        sorted(str(c.get("problem_id") or c.get("id") or "") for c in candidates)
+    )[:200]
+    result = await run_agent("review", ctx)
+    out = result.data or baseline
+    payload = result.to_dict()
+    payload["data"] = out.model_dump()
+    payload["rule_baseline"] = baseline.model_dump()
+    return payload
+
+
+async def score_quality(
+    user_id: str,
+    config: dict[str, Any],
+    *,
+    problem: dict[str, Any],
+    code: str,
+    language: str = "python",
+    verdict: str = "AC",
+    memory: str = "",
+) -> dict[str, Any]:
+    """代码质量两阶段评分：规则给窗口 -> LLM 在窗口内做语义修正。
+
+    与 annotate_problem 是同一套机制（规则基线 + 窗口夹紧），只是对象从
+    "题面难度"换成了"代码质量"。这里显式返回 rule_baseline 与窗口，
+    让前端能展示"规则怎么看"与"模型修正后怎么看"的差异。
+    """
+    from ..schemas import QUALITY_RADIUS
+    from .rules import quality_window
+
+    baseline, metrics = quality_window(code)
+    lo = max(0.0, baseline - QUALITY_RADIUS)
+    hi = min(100.0, baseline + QUALITY_RADIUS)
+
+    ctx = _ctx(
+        user_id,
+        config,
+        {
+            "title": problem.get("title", ""),
+            "statement": problem.get("statement", ""),
+            "tags": problem.get("tags", []),
+            "language": language,
+            "code": code,
+            "verdict": verdict,
+        },
+        memory=memory,
+    )
+    # 缓存盐：同一份代码在同一个规则基线下的评分才可复用
+    ctx.data["cache_salt"] = f"{round(baseline, 1)}:{verdict}"
+
+    result = await run_agent("quality", ctx)
+    out = result.data or rule_quality(ctx.data)
+    payload = result.to_dict()
+    payload["data"] = out.model_dump()
+    payload["rule_baseline"] = {
+        "score": baseline,
+        "grade": quality_grade_of(baseline),
+        "allowed_range": [round(lo, 2), round(hi, 2)],
+        "metrics": {k: v for k, v in metrics.items() if not k.startswith("_")},
+    }
+    payload["stage"] = "rule" if result.degraded else "llm"
     return payload
 
 
@@ -307,7 +467,11 @@ async def practice_pipeline(
         "failure_rate": round(len(failed) / max(1, len(agents)), 4),
         "cache": cache_stats(),
         "elapsed_ms": elapsed_ms,
-        "agent_count": len(CORE_AGENTS),
+        # agent_count 是**本次链路实际执行**的 Agent 数（judge/mastery/推荐/路线图
+        # 按候选与标签是否存在而增减），不是 Agent 总数 —— 早期版本填的是
+        # len(CORE_AGENTS)，那是个静态常量，与本次实际执行情况无关，会误导。
+        "agent_count": len(agents),
+        "core_agent_total": len(CORE_AGENTS),
     }
     _emit(task, "summary", summary)
     return summary
@@ -348,10 +512,13 @@ __all__ = [
     "analyze_mastery",
     "annotate_problem",
     "build_roadmap",
+    "generate_hint",
     "judge_submission",
     "practice_pipeline",
+    "prioritize_review",
     "recommend_next",
     "route",
     "run_agent",
+    "score_quality",
     "solve_problem",
 ]

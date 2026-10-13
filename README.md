@@ -24,7 +24,7 @@ python run.py                     # http://127.0.0.1:8000
 
 ```bash
 # 5. 验证
-python -m pytest                      # 233 项单元 + 集成测试
+python -m pytest                      # 266 项单元 + 集成测试
 python -m pytest --cov=app            # 覆盖率（CI 阈值 75%）
 python -m ruff check .                # 代码质量（0 告警）
 python scripts/judge_selftest.py      # 判题沙箱自测 10/10
@@ -147,6 +147,73 @@ curl -X POST http://127.0.0.1:8000/api/import/preview \
 
 自动识别标题、题面、输入输出格式、数据范围、样例与知识点，并交给两阶段标注定难度。**不联网抓取**（避免爬虫风险，且离线可用）。
 
+### 渐进式解题提示（提示强度由掌握度决定）
+
+```bash
+curl -X POST "http://127.0.0.1:8000/api/problems/<pid>/hint?language=python" \
+  -H "Authorization: Bearer <token>"
+```
+
+提示分三档递进，**强度由该题知识点的掌握度算定**（不是模型自由发挥）：
+
+| 掌握度 | 强度 | 给什么 |
+|---|---|---|
+| < 40 或首次接触 | `pseudocode` | 3 步以内的伪代码级骨架（仍不给完整代码） |
+| 40 – 65 | `key_observation` | 点出关键性质 + 需要检查的边界 |
+| >= 65 | `direction` | 只给思考方向 |
+
+样本不足时**保守升档**：只做过 1–2 次的题，掌握度数字本身不可信，给弱提示会让新手卡死。
+
+强度是策略、内容是表达 —— 策略归规则层（可复现、可测试），表达归模型。模型若试图改强度，`postprocess` 会强制改回。
+提示**永远不给可提交的完整代码**：一旦给出完整解法，这道题的训练价值就归零了。
+
+### 复习队列优先（先做哪几道）
+
+```bash
+curl "http://127.0.0.1:8000/api/review/priority?time_budget_minutes=60" \
+  -H "Authorization: Bearer <token>"
+```
+
+与 FSRS 的分工：**FSRS 决定"何时到期"（记忆科学），本 Agent 决定"到期后先做哪个"（学习策略）**。
+两者混在一起会让 FSRS 参数被业务策略污染、无法独立调参。
+
+排序信号：逾期紧迫度 ×3 + 掌握度缺口 ×0.8 + 遗忘次数 ×6，并遵守时间预算（每题按 15 分钟估，
+宁可少挑也不给一个做不完的队列）。每道题都带可解释的排序理由。
+
+### 学习记忆（Token 可控的上下文注入）
+
+```bash
+curl http://127.0.0.1:8000/api/problems/<pid>/hint -X POST -H "Authorization: Bearer <token>"
+# 响应里的 memory_tokens 即本次注入量
+```
+
+核心设计：**注入的不是历史，是结论。**
+
+刷了 200 题的用户，原始历史轻松超过 10 万 token；但模型真正需要的从来不是"他做过哪些题"，
+而是"他现在哪里弱、什么错误模式反复出现、最近是上升还是下滑"。`core/memory.py` 把历史离线聚合成
+一份短清单（薄弱点 / 易错模式 / 趋势），**注入量与会话规模解耦** —— 实测 81 次提交压到约 87 token。
+
+只有决策类 Agent（hint / recommend / review / roadmap）注入记忆；判题、难度标注、题解生成
+注入只会增加 token 与干扰，因此默认关闭（`BaseAgent.inject_memory = False`）。
+
+### 代码质量两阶段评分
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/agent/run \
+  -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
+  -d '{"agent":"quality","payload":{"code":"<你的代码>","verdict":"AC"}}'
+```
+
+与难度标注同一套两阶段机制，只是对象从"题面难度"换成"代码质量"：
+
+| 阶段 | 负责 | 内容 |
+|---|---|---|
+| 第一阶段（规则，确定性问题） | `rules.quality_window` | 嵌套深度、代码行数、标识符长度分布、注释比例、边界判断密度 —— 全部可量化可复现 |
+| 第二阶段（LLM，开放性问题） | `agents/quality.py` | 可读性观感、边界是否真的周全、命名是否表达意图 —— 需要语义理解 |
+
+**硬约束**：模型只能在规则基线 ±12 分内修正，越界无条件夹回（`clamp_quality`）。
+否则模型可以把 6 层嵌套、全单字母变量的代码评成"优秀"，评分就失去区分度。
+
 ### 打卡与学习报告
 
 - **日界按用户本地时区计算**（`User.timezone`）—— 否则东八区凌晨打卡会被算进前一天，连击莫名中断
@@ -170,14 +237,17 @@ docker compose -f docker-compose.prod.yml up -d --build
 
 | 简历原文 | 实现位置 | 验证方式 |
 |---|---|---|
-| 后端 27 个接口 / 14 张表 | `app/models.py`（17 表）、`app/api/*.py`（73 接口，超集） | `scripts/check_routes.py` |
-| 5 个 Agent（推荐/题解/评测/学习状态/路线图） | `app/agents/`（+`difficulty` 标注 Agent，共 6 个） | `test_agent_registry_matches_resume_claim` |
+| 后端 27 个接口 / 14 张表 | `app/models.py`（17 表）、`app/api/*.py`（75 接口，超集） | `scripts/check_routes.py` |
+| 5 个 Agent：路线规划/题目推荐/解题提示/掌握度评估/复习队列优先 | `app/agents/`：`roadmap` / `recommend` / `hint` / `mastery` / `review` 五个核心 Agent；另有 `judge` / `solution` / `difficulty` / `quality` 四个支撑型 Agent | `test_agent_registry_matches_resume_claim`（断言核心 Agent 精确等于这五项职责） |
 | 统一基类 + 结构化输出 + Pydantic 校验 | `app/core/agent.py`、`app/schemas.py` | `tests/test_core.py` |
 | **单 Agent 失败自动降级为规则引擎，主链不中断** | `BaseAgent._degrade`、`app/core/rules.py` | `test_agent_degrades_to_rule_engine`、`test_pipeline_survives_when_every_agent_fails` |
 | 两阶段难度标注（规则区间 + 模型校准） | `core/rules.py::difficulty_window/clamp_to_window` | `test_two_stage_annotation_never_out_of_window`、`scripts/eval_difficulty.py` |
+| **两阶段评分：确定性问题用规则、开放性问题用 LLM 语义修正** | 难度标注（`annotate_problem`）+ 代码质量评分（`score_quality` / `agents/quality.py`）：规则算客观指标给出窗口，模型只能在窗口内修正 | `test_quality_clamps_out_of_window_score`、`test_quality_distinguishes_good_from_bad_code` |
+| **知识状态建模：动态调整推荐难度与提示强度** | 提示强度由掌握度算定（`rules.hint_strength_for`）：<40 给步骤骨架、40-65 给关键观察、>=65 只给方向；样本不足时保守升档 | `test_hint_strength_decreases_with_mastery`、`test_hint_agent_forces_strength_from_mastery` |
 | 0-100 分五级学习状态 + 置信度 | `core/mastery.py`、`agents/mastery.py` | `test_mastery_overview_and_profile` |
 | 掌握度画像 + 遗忘曲线 + 间隔重复 | `core/fsrs.py`（FSRS 简化版） | `test_fsrs_*`（6 项） |
 | 错题本 + 易错题聚类 | `services.py::cluster_errors` | `test_wrong_book_clustering` |
+| **记忆注入：清单仅保留关键字符，避免全量历史注入导致 Token 暴涨** | `core/memory.py`：把历史离线聚合成短清单（薄弱点/易错模式/趋势），只注入结论；实测 81 次提交压到 ~87 token | `test_memory_token_budget_independent_of_history_size`、`test_memory_block_is_conclusion_not_history` |
 | 多用户 + 用户级模型配置 | `models.py::UserModelConfig`、`deps.py` | `test_model_config_masks_api_key` |
 | OpenAI / Anthropic / Gemini 三协议兼容 | `core/providers.py` | `test_build_provider_all_protocols`、`test_gemini_schema_narrowing` |
 | 长链路后台任务 + 轮询 + 流式 + 中断 | `core/tasks.py`、`api/agent.py` | `test_pipeline_async_task_and_sse`、`test_pipeline_task_cancel` |
@@ -213,16 +283,19 @@ app/                     后端（FastAPI）
 │   ├── subprocess_backend.py  本机执行（超时/内存/进程树回收）
 │   └── docker_backend.py      容器隔离（网络禁用/能力剥夺/cgroup）
 ├── core/
-│   ├── agent.py         Agent 统一基类 + 流式执行 + 增量 JSON 解析
+│   ├── agent.py         Agent 统一基类 + 流式执行 + 增量 JSON 解析 + 记忆注入
 │   ├── providers.py     三协议适配 + Mock Provider（prompt 感知）
-│   ├── rules.py         规则引擎（6 个 Agent 的确定性兜底）
+│   ├── rules.py         规则引擎（9 个 Agent 的确定性兜底 + 提示强度/质量评分口径）
 │   ├── pipeline.py      多 Agent 链路编排 + 成本路由
+│   ├── memory.py        学习记忆：历史聚合成短清单（Token 可控的上下文注入）
 │   ├── fsrs.py          FSRS 简化版（S/D/R 三参数）
 │   ├── mastery.py       掌握度 0-100（时间衰减 + 置信度收缩）
 │   ├── cache.py         结果缓存（LRU + TTL，成本控制）
 │   └── tasks.py         后台任务 + SSE + 中断 + 并发上限
-├── agents/              6 个 Agent（各自声明 schema / prompt / 规则兜底）
-└── api/                 10 组路由，73 个接口
+├── agents/              9 个 Agent（各自声明 schema / prompt / 规则兜底）
+│                       核心 5 个：roadmap / recommend / hint / mastery / review
+│                       支撑 4 个：judge / solution / difficulty / quality
+└── api/                 10 组路由，75 个接口
 
 migrations/               Alembic 迁移（破坏性变更用）
 deploy/Caddyfile          生产反代（TLS + SSE 不缓冲 + 安全头）
@@ -278,7 +351,7 @@ clamped = clamp_to_window(model_out, (lo, hi))
 
 | 指标 | 实测值 | 命令 |
 |---|---|---|
-| 单元 + 集成测试 | **233 项通过 / 7 项按环境跳过** | `python -m pytest` |
+| 单元 + 集成测试 | **266 项通过 / 7 项按环境跳过** | `python -m pytest` |
 | 测试覆盖率 | **76%**（CI 门禁 `--cov-fail-under=75`） | `python -m pytest --cov=app` |
 | 代码质量 | **ruff 0 告警**（check + format 双通过） | `python -m ruff check .` |
 | 判题沙箱自测 | **10/10**（Python 7 种 verdict + Java 3 种） | `python scripts/judge_selftest.py` |
@@ -292,8 +365,8 @@ clamped = clamp_to_window(model_out, (lo, hi))
 | 并发压测 | **14/14 断言**（4 个场景：read/write/mixed/pipeline），读 191 req/s、写 125 req/s、读 p95 74ms、0 次 `database is locked` | `python scripts/loadtest.py --users 10 --duration 8` |
 | 难度标注 Kappa（vs 人工标注） | **0.788** | `python -m scripts.eval_difficulty` |
 | 完全一致率 / 越界率 / 可复现性 | **0.833 / 0 / true** | 同上 |
-| 业务接口数 / 数据表 | **73 个接口 / 17 张表** | `python scripts/check_routes.py` |
-| 后端规模 | `app/` 47 个文件 / 11351 行；含 tests+scripts+migrations 共 79 文件 / 18252 行 | — |
+| 业务接口数 / 数据表 | **75 个接口 / 17 张表** | `python scripts/check_routes.py` |
+| 后端规模 | `app/` 51 个文件 / 13040 行；含 tests+scripts+migrations 共 83 文件 / 19941 行 | — |
 | 前端规模 | 26 个源文件 / 5500 行 / 14 个页面 | — |
 | 前端构建 | 2290 模块 / 10.9s / dist 2737KB | `cd web && pnpm build` |
 
@@ -370,8 +443,9 @@ uvicorn app.main:app --port 8000 --loop asyncio:ProactorEventLoop   # 需要热�
                   GET,PATCH /api/auth/me
                   GET,PUT /api/users/me/model-config
 
-② 题库与判题(12)  GET,POST /api/problems        GET /api/problems/{id}|random|search|tags
+② 题库与判题(13)  GET,POST /api/problems        GET /api/problems/{id}|random|search|tags
                   POST /api/problems/{id}/route
+                  POST /api/problems/{id}/hint            ← 渐进式提示（强度由掌握度决定）
                   GET,POST,PUT /api/problems/{id}/testcases
                   DELETE /api/problems/{id}/testcases/{case_id}
                   GET /api/judge
@@ -381,7 +455,8 @@ uvicorn app.main:app --port 8000 --loop asyncio:ProactorEventLoop   # 需要热�
 
 ④ 推荐路线图(3)   GET /api/recommend/next|explain|roadmap
 
-⑤ 复习与掌握度(10) GET /api/review/queue|due     POST /api/review/mark
+⑤ 复习与掌握度(11) GET /api/review/queue|due|priority    POST /api/review/mark
+                  ↑ priority = 复习队列优先 Agent（按学习收益重排 + 解释）
                   GET /api/mastery/profile|overview|timeline    POST /api/mastery/recalc
                   GET /api/wrong-book            POST /api/wrong-book/cluster
                   POST /api/wrong-book/{problem_id}/mastered

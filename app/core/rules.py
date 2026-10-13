@@ -23,9 +23,14 @@ from ..schemas import (
     DIFFICULTY_ORDER,
     DIFFICULTY_RADIUS,
     DifficultyOut,
+    HintOut,
     JudgeOut,
     MasteryOut,
+    QualityDimension,
+    QualityOut,
     RecommendOut,
+    ReviewPriorityItem,
+    ReviewPriorityOut,
     RoadmapOut,
     RoadmapStage,
     SolutionOut,
@@ -305,6 +310,388 @@ def rule_judge(ctx_data: dict[str, Any]) -> JudgeOut:
         explanation=f"规则引擎归因：{explanation}",
         fix_suggestion=fix,
         confidence=0.55,
+    )
+
+
+# ---------------------------------------------------------- 提示规则引擎
+# 提示强度的权威口径：掌握度越低给越强的提示。
+# 阈值定义在规则层而不是 prompt 里，好处是强度可复现、可测试，
+# 模型只负责"在该强度下写提示内容"，无权自行升降档。
+HINT_STRENGTH_THRESHOLDS: list[tuple[float, str]] = [
+    (40.0, "pseudocode"),  # 掌握度 < 40：给到伪代码级
+    (65.0, "key_observation"),  # 40-65：给关键观察
+    (100.0, "direction"),  # >= 65：只给方向
+]
+
+# 每档强度对应的提示条数（弱提示 1 条，强提示 3 条递进）
+HINT_COUNT_BY_STRENGTH: dict[str, int] = {
+    "direction": 1,
+    "key_observation": 2,
+    "pseudocode": 3,
+}
+
+
+def hint_strength_for(mastery_score: float, attempts: int = 0) -> tuple[str, str]:
+    """按掌握度决定提示强度，返回 (强度, 依据说明)。
+
+    两个额外考虑（都来自真实学习场景，不是拍脑袋）：
+      * **样本不足时升一档**：只做过 1-2 次的题目，掌握度数字本身不可信，
+        此时按数字给弱提示会让新手卡死；样本 < 3 时至少给到 key_observation。
+      * **从未做过（attempts == 0）直接给最强**：第一次接触的知识点，
+        给方向等于没说。
+    """
+    score = max(0.0, min(100.0, float(mastery_score)))
+
+    if attempts <= 0:
+        return "pseudocode", "该知识点尚无提交记录（0 次），首次接触给最强提示。"
+    if attempts < 3:
+        return "key_observation", (
+            f"该知识点仅 {attempts} 次提交，样本不足以判断掌握度，保守给中等强度提示。"
+        )
+
+    for threshold, strength in HINT_STRENGTH_THRESHOLDS:
+        if score < threshold:
+            return (
+                strength,
+                f"该知识点掌握度 {score:.0f} 分（{attempts} 次提交），据此给出对应强度提示。",
+            )
+    return "direction", f"该知识点掌握度 {score:.0f} 分，掌握较好，只给方向性提示。"
+
+
+def rule_hint(ctx_data: dict[str, Any]) -> HintOut:
+    """提示规则引擎：不依赖模型，按强度给出模板化但有针对性的提示。
+
+    诚实原则：模板不知道具体算法，因此**不假装给出解法**，而是给出
+    "该强度下应有的思考框架" + 明确的下一步动作，并标注这是降级结果。
+    """
+    tags = ctx_data.get("tags") or []
+    tag_text = "、".join(tags[:3]) if tags else "本题涉及的知识点"
+    mastery = float(ctx_data.get("mastery_score", 50.0))
+    attempts = int(ctx_data.get("attempts", 0))
+    strength, reason = hint_strength_for(mastery, attempts)
+    count = HINT_COUNT_BY_STRENGTH[strength]
+
+    pool = {
+        "direction": [
+            f"先别急着写代码：把题面的输入输出与数据范围抄一遍，判断{tag_text}里哪一步是瓶颈。",
+            "用小规模样例手算一遍，观察答案是怎么一步步得到的。",
+            "如果朴素做法会超时，想想能否先排序/预处理再线性扫描。",
+        ],
+        "key_observation": [
+            f"关键观察：{tag_text}类问题通常有一个「单调性」或「可合并」的性质，先把它找出来。",
+            "检查一下：当前做法在最坏情况下要处理多少次元素？对照数据范围看是否可行。",
+            "边界条件单独列出来（空输入、单元素、完全包含/完全不相交），逐条确认。",
+        ],
+        "pseudocode": [
+            f"步骤 1：读入并按{tag_text}所需的结构整理数据。",
+            "步骤 2：写主循环 —— 每次迭代维护当前状态，并判断何时该更新答案。",
+            "步骤 3：输出答案，并用样例与边界各测一遍再提交。",
+        ],
+    }[strength]
+
+    return HintOut(
+        strength=strength,  # type: ignore[arg-type]
+        hints=pool[:count],
+        key_insight=f"规则引擎提示：重点在「{tag_text}」的性质识别与边界处理（未包含完整解法）。",
+        next_step="按上面第 1 条动手写第一版代码，跑一遍样例看输出差在哪。",
+        strength_reason=f"规则引擎：{reason}",
+        confidence=0.5,
+    )
+
+
+# ------------------------------------------------------ 复习队列优先规则引擎
+# 排序信号权重（可复现、可测试；模型只能在候选里重排，不能改变评分口径）
+REVIEW_W_OVERDUE = 3.0  # 每逾期一天 +3 分
+REVIEW_W_MASTERY_GAP = 0.8  # 掌握度缺口（100 - 掌握度）× 0.8
+REVIEW_W_LAPSE = 6.0  # 每次遗忘 +6 分（反复出错的题优先巩固）
+REVIEW_MINUTES_PER_PROBLEM = 15  # 时间预算换算：每题按 15 分钟估
+
+
+def rule_review_priority(ctx_data: dict[str, Any]) -> ReviewPriorityOut:
+    """规则引擎排序：逾期 × 掌握度缺口 × 遗忘次数，并遵守时间预算。
+
+    打分公式（写在注释里是为了让"为什么这题排第一"可追溯）：
+        score = 逾期天数 × 3 + (100 - 掌握度) × 0.8 + 遗忘次数 × 6
+    各项权重是刻意选的量级：逾期天数通常 0-10，掌握度缺口 0-100，
+    遗忘次数通常 0-3，乘完权重后三者对结果都有实际影响，不会互相淹没。
+    """
+    candidates = ctx_data.get("candidates") or []
+    budget = int(ctx_data.get("time_budget_minutes", 0) or 0)
+
+    scored: list[tuple[float, dict[str, Any], float, float, int]] = []
+    for p in candidates:
+        overdue = float(p.get("overdue_days", 0.0) or 0.0)
+        lapses = int(p.get("lapses", 0) or 0)
+        mastery_scores: dict[str, float] = p.get("mastery_scores") or {}
+        tags = p.get("tags") or []
+        # 掌握度缺口：取该题各标签里最弱的一项（最短板决定复习收益）
+        if mastery_scores and tags:
+            weakest = min(float(mastery_scores.get(t, 50.0)) for t in tags)
+        elif mastery_scores:
+            weakest = min(float(v) for v in mastery_scores.values())
+        else:
+            weakest = 50.0
+        gap = 100.0 - weakest
+        score = overdue * REVIEW_W_OVERDUE + gap * REVIEW_W_MASTERY_GAP + lapses * REVIEW_W_LAPSE
+        scored.append((score, p, overdue, weakest, lapses))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    # 时间预算：超出预算的截掉（宁可少挑，也不给做不完的队列）
+    if budget > 0:
+        max_items = max(1, budget // REVIEW_MINUTES_PER_PROBLEM)
+        scored = scored[:max_items]
+
+    ordered: list[ReviewPriorityItem] = []
+    for i, (score, p, overdue, weakest, lapses) in enumerate(scored):
+        bits = []
+        if overdue > 0:
+            bits.append(f"逾期 {overdue:.1f} 天")
+        bits.append(f"「{_weakest_tag(p, weakest)}」掌握度 {weakest:.0f} 分")
+        if lapses > 0:
+            bits.append(f"已遗忘 {lapses} 次")
+        ordered.append(
+            ReviewPriorityItem(
+                problem_id=str(p.get("problem_id") or p.get("id") or ""),
+                title=str(p.get("title", "")),
+                order=i + 1,
+                reason=f"规则引擎：{'、'.join(bits)}，综合优先级 {score:.1f}。",
+                urgency=(f"逾期 {overdue:.1f} 天" if overdue > 0 else "今日到期"),
+            )
+        )
+
+    if not ordered:
+        # schema 要求 ordered 至少 1 项；空队列时给一个语义明确的占位项
+        ordered = [
+            ReviewPriorityItem(
+                problem_id="__none__",
+                title="",
+                order=1,
+                reason="规则引擎：当前没有到期的复习项。",
+                urgency="无待复习",
+            )
+        ]
+
+    budget_note = (
+        f"时间预算 {budget} 分钟（按每题 {REVIEW_MINUTES_PER_PROBLEM} 分钟估算，"
+        f"共挑出 {len(ordered)} 道）。"
+        if budget > 0
+        else ""
+    )
+    return ReviewPriorityOut(
+        ordered=ordered,
+        strategy=(
+            f"规则引擎：按「逾期紧迫度 ×3 + 掌握度缺口 ×0.8 + 遗忘次数 ×6」降序排列，"
+            f"优先补最短板知识点。{budget_note}"
+        ),
+        confidence=0.6,
+    )
+
+
+def _weakest_tag(problem: dict[str, Any], weakest_score: float) -> str:
+    """回填最弱标签名，仅用于生成可读理由。"""
+    mastery_scores: dict[str, float] = problem.get("mastery_scores") or {}
+    tags = problem.get("tags") or []
+    if mastery_scores and tags:
+        return min(tags, key=lambda t: float(mastery_scores.get(t, 50.0)))
+    if tags:
+        return str(tags[0])
+    return "综合"
+
+
+# ------------------------------------------------------ 代码质量两阶段评分
+# 规则阶段：只算**客观可量化**的指标。这些不需要模型判断，且必须可复现 ——
+# 同一份代码跑两次必须得到同一个分数，否则"两阶段"里的第一阶段就失去了
+# 作为约束的意义（LLM 会在一个随机基线上做修正）。
+QUALITY_W_STRUCTURE = 0.35  # 结构（嵌套深度、代码行数）
+QUALITY_W_NAMING = 0.25  # 命名（标识符可读性）
+QUALITY_W_COMMENT = 0.15  # 注释与说明
+QUALITY_W_BOUNDARY = 0.25  # 边界处理迹象（显式判断、异常处理）
+
+
+def _quality_metrics(code: str) -> dict[str, float]:
+    """提取可量化的代码特征。全部是纯文本统计，不需要解析器。
+
+    为什么不用 AST：本项目支持 Python/C++/Java 三种语言，维护三套解析器
+    成本过高，而"缩进深度、标识符长度、注释比例"这类指标用行级统计已经
+    足够稳定（它们是启发式，不需要绝对精确 —— 精确判断留给第二阶段的模型）。
+    """
+    import re as _re
+
+    lines = [ln for ln in (code or "").splitlines() if ln.strip()]
+    if not lines:
+        return {
+            "lines": 0.0,
+            "max_indent": 0.0,
+            "comment_ratio": 0.0,
+            "avg_ident_len": 0.0,
+            "short_ident_ratio": 0.0,
+            "boundary_hints": 0.0,
+            "_structure": 20.0,
+            "_naming": 20.0,
+            "_comment": 45.0,
+            "_boundary": 40.0,
+        }
+
+    indents: list[int] = []
+    comment_lines = 0
+    identifiers: list[str] = []
+    for raw in lines:
+        stripped = raw.lstrip()
+        if stripped.startswith(("#", "//", "/*", "*", "--")):
+            comment_lines += 1
+            continue
+        # 缩进宽度按 4 空格折算（tab 记 4）
+        indent = len(raw) - len(stripped)
+        indents.append(indent // 4)
+        for token in _re.findall(r"[A-Za-z_][A-Za-z_0-9]{1,}", stripped):
+            identifiers.append(token)
+
+    max_indent = max(indents) if indents else 0
+    short = sum(1 for t in identifiers if len(t) <= 2)
+    avg_ident = sum(len(t) for t in identifiers) / len(identifiers) if identifiers else 0
+
+    # 边界处理迹象：只认**真正的边界检查模式**，而不是任意 if。
+    # 早期版本把任何 "if" 都算作边界处理，结果深嵌套的条件分支也被加了分 ——
+    # 实测一份 6 层嵌套、全是单字母变量的代码因此拿到"合格"档，评分失去区分度。
+    # 这里改为匹配具体的边界语义：空值判断、零值比较、异常处理、越界保护。
+    boundary_patterns = (
+        r"\bif\s+not\s+\w+",  # if not x（空值判断）
+        r"\bif\s+\w+\s*==\s*0\b",  # == 0（零值）
+        r"\bif\s+\w+\s*<=\s*0\b",  # <= 0
+        r"\bif\s+len\(",  # if len(...)
+        r"\btry\s*:",  # try
+        r"\bexcept\b",  # except
+        r"\bcatch\s*\(",  # catch (
+        r"\bthrow\b",  # throw
+        r"\braise\b",  # raise
+        r"\bassert\b",  # assert
+        r"==\s*null\b",  # == null
+        r"==\s*None\b",  # == None
+        r"\bis\s+None\b",  # is None
+        r"\bempty\b",  # empty
+        r"\bINT_MAX\b|\bINT_MIN\b",  # 极值保护
+    )
+    haystack = code or ""
+    boundary_hits = sum(len(_re.findall(pat, haystack)) for pat in boundary_patterns)
+
+    # --- 结构分：嵌套过深扣分，代码过长扣分 ---
+    structure = 100.0
+    structure -= min(40.0, max(0.0, (max_indent - 2)) * 12.0)  # 超过 2 层开始扣
+    structure -= min(30.0, max(0.0, (len(lines) - 60)) * 0.5)  # 超过 60 行开始扣
+    structure = max(20.0, structure)
+
+    # --- 命名分：短标识符越多越差，平均长度过短也扣 ---
+    naming = 100.0
+    naming -= min(50.0, (short / max(1, len(identifiers))) * 100.0)
+    naming -= min(20.0, max(0.0, (5.0 - avg_ident)) * 6.0)
+    naming = max(20.0, naming)
+
+    # --- 注释分：有注释即可，不追求高比例（代码自解释优于注释堆砌）---
+    ratio = comment_lines / max(1, len(lines))
+    if ratio <= 0:
+        comment = 45.0
+    elif ratio < 0.05:
+        comment = 65.0
+    elif ratio < 0.35:
+        comment = 95.0
+    else:
+        comment = 80.0  # 注释过多往往是代码不清晰的信号
+
+    # --- 边界分：按显式判断的密度给分（封顶）---
+    density = boundary_hits / max(1.0, len(lines) / 10.0)
+    boundary = min(100.0, 40.0 + density * 15.0)
+
+    return {
+        "lines": float(len(lines)),
+        "max_indent": float(max_indent),
+        "comment_ratio": round(ratio, 3),
+        "avg_ident_len": round(avg_ident, 3),
+        "short_ident_ratio": round(short / max(1, len(identifiers)), 3),
+        "boundary_hints": float(boundary_hits),
+        "_structure": round(structure, 2),
+        "_naming": round(naming, 2),
+        "_comment": round(comment, 2),
+        "_boundary": round(boundary, 2),
+    }
+
+
+def quality_window(code: str) -> tuple[float, dict[str, float]]:
+    """第一阶段：算出规则基线与允许的修正窗口。
+
+    返回 (规则基线分, 指标明细)。第二阶段的 LLM 只能在 [baseline-R, baseline+R]
+    内调整总分 —— 与难度标注的"规则给区间 -> 模型在区间内校准"是同一套机制。
+    """
+    m = _quality_metrics(code)
+    baseline = (
+        m["_structure"] * QUALITY_W_STRUCTURE
+        + m["_naming"] * QUALITY_W_NAMING
+        + m["_comment"] * QUALITY_W_COMMENT
+        + m["_boundary"] * QUALITY_W_BOUNDARY
+    )
+    return round(max(0.0, min(100.0, baseline)), 2), m
+
+
+def clamp_quality(out: QualityOut, window: tuple[float, float]) -> QualityOut:
+    """第二阶段结果落回规则窗口内：越界夹紧，等级按夹紧后的分数重算。
+
+    这是"两阶段"的关键约束：LLM 可以做语义修正，但不能推翻客观指标
+    （比如把一段 8 层嵌套、全是单字母变量的代码评为"优秀"）。
+    """
+    lo, hi = window
+    score = max(lo, min(hi, float(out.score)))
+    return out.model_copy(update={"score": round(score, 2), "grade": quality_grade_of(score)})
+
+
+def quality_grade_of(score: float) -> str:
+    """分数 -> 等级的唯一口径（全系统共用，杜绝不一致）。"""
+    if score >= 85.0:
+        return "优秀"
+    if score >= 70.0:
+        return "良好"
+    if score >= 55.0:
+        return "合格"
+    return "待改进"
+
+
+def rule_quality(ctx_data: dict[str, Any]) -> QualityOut:
+    """规则引擎兜底：直接用第一阶段的客观指标产出评分。
+
+    诚实原则：不假装做了语义判断 —— summary 里明确标注这是基于量化指标的
+    评分，未做语义修正。用户能据此知道"这分数只反映形式指标"。
+    """
+    code = str(ctx_data.get("code", ""))
+    baseline, m = quality_window(code)
+    readable = round((m["_structure"] + m["_naming"]) / 2, 1)
+    return QualityOut(
+        score=baseline,
+        grade=quality_grade_of(baseline),  # type: ignore[arg-type]
+        dimensions=[
+            QualityDimension(
+                name="可读性",
+                score=readable,
+                comment=(
+                    f"最大嵌套 {int(m['max_indent'])} 层、平均标识符长度 "
+                    f"{m['avg_ident_len']:.1f} 字符、短标识符占比 "
+                    f"{m['short_ident_ratio']:.0%}。"
+                ),
+            ),
+            QualityDimension(
+                name="边界处理",
+                score=round(m["_boundary"], 1),
+                comment=f"检出 {int(m['boundary_hints'])} 处显式判断/异常处理。",
+            ),
+        ],
+        summary=(
+            f"规则引擎评分：基于 {int(m['lines'])} 行代码的量化指标"
+            f"（结构/命名/注释/边界），未做语义修正。"
+        ),
+        top_improvement=(
+            "减少嵌套层级，并把单字母变量改成有含义的名字。"
+            if m["max_indent"] > 3 or m["short_ident_ratio"] > 0.5
+            else "补充边界条件的显式判断（空输入、最小规模、最大值）。"
+        ),
+        confidence=0.5,
     )
 
 

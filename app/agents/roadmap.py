@@ -21,6 +21,7 @@ SYSTEM = """你是算法学习路线规划师。根据用户的掌握度画像�
 
 class RoadmapAgent(BaseAgent[RoadmapOut]):
     name = "roadmap"
+    inject_memory = True  # 决策类 Agent：注入学习记忆清单
     schema = RoadmapOut
     system_prompt = SYSTEM
 

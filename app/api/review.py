@@ -1,12 +1,20 @@
-"""⑤ 复习（FSRS 间隔重复） —— 3 个接口。"""
+"""⑤ 复习（FSRS 间隔重复） —— 4 个接口。"""
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
 from ..core import fsrs
-from ..deps import DbSession, UserDep
-from ..services import get_review_queue, review_forecast, upsert_review_item
+from ..core.memory import memory_block_for
+from ..core.pipeline import prioritize_review
+from ..deps import DbSession, ModelConfigDep, UserDep
+from ..services import (
+    get_problem_tags,
+    get_review_queue,
+    mastery_scores_map,
+    review_forecast,
+    upsert_review_item,
+)
 from .schemas import ReviewMarkIn
 
 router = APIRouter(prefix="/api/review", tags=["⑤ 复习"])
@@ -47,3 +55,56 @@ async def review_mark(body: ReviewMarkIn, db: DbSession, user: UserDep):
         "forgetting_curve": curve,
         "next_interval_days": plan["interval_days"],
     }
+
+
+@router.get("/priority", response_model=dict)
+async def review_priority(
+    db: DbSession,
+    user: UserDep,
+    cfg: ModelConfigDep,
+    limit: int = Query(default=20, ge=1, le=50, description="参与排序的到期项上限"),
+    time_budget_minutes: int = Query(
+        default=0, ge=0, le=600, description="今日时间预算（分钟）；0 表示不限"
+    ),
+):
+    """复习队列优先 Agent：在 FSRS 已筛出的到期项里决定"先做哪个"。
+
+    与 /queue 的分工：/queue 给的是**按到期时间**排的原始队列（记忆模型视角），
+    本接口给的是**按学习收益**重排后的队列 + 每条的排序理由（教练视角）。
+    两者数据同源，前端可以并排展示"客观到期"与"推荐顺序"的差异。
+    """
+    due_items = await get_review_queue(db, user.id, due_only=True, limit=limit)
+    mastery = await mastery_scores_map(db, user.id)
+
+    # 补齐每条候选的标签与掌握度：排序信号需要"该题知识点掌握度"
+    pids = [it["problem_id"] for it in due_items]
+    tag_map = await get_problem_tags(db, pids) if pids else {}
+    candidates = [
+        {
+            **it,
+            "tags": [t["name"] for t in tag_map.get(it["problem_id"], [])],
+            "mastery_scores": mastery,
+        }
+        for it in due_items
+    ]
+
+    if not candidates:
+        return {
+            "agent": "review",
+            "status": "ok",
+            "degraded": False,
+            "data": None,
+            "message": "当前没有到期的复习项，无需排序。",
+            "due_count": 0,
+        }
+
+    memory = await memory_block_for(db, user.id)
+    result = await prioritize_review(
+        user.id,
+        cfg,
+        candidates=candidates,
+        time_budget_minutes=time_budget_minutes,
+        memory=memory,
+    )
+    result["due_count"] = len(candidates)
+    return result

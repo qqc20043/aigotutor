@@ -25,6 +25,7 @@ SYSTEM = """你是算法刷题教练，负责从候选题目里挑出"现在最�
 
 class RecommendAgent(BaseAgent[RecommendOut]):
     name = "recommend"
+    inject_memory = True  # 决策类 Agent：注入学习记忆清单
     schema = RecommendOut
     system_prompt = SYSTEM
 

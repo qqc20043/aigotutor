@@ -327,7 +327,7 @@ async def test_list_agents_contract(auth_client):
     r = await auth_client.get("/api/agent")
     assert r.status_code == 200
     body = r.json()
-    assert len(body["core_agents"]) == 5
+    assert len(body["core_agents"]) == 5  # 简历点名的五项职责
     assert {a["name"] for a in body["agents"]} >= set(body["core_agents"])
 
 

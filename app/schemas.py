@@ -138,6 +138,109 @@ class RoadmapOut(BaseModel):
     rationale: str = Field(min_length=1, max_length=600)
 
 
+# 提示强度三档：由掌握度决定（掌握度越低给越强的提示）。
+# 用 Literal 锁死，模型不能自造"中等偏强"这类档位。
+HintStrength = Literal["direction", "key_observation", "pseudocode"]
+
+
+class HintOut(BaseModel):
+    """解题提示 Agent：渐进式提示 + 强度自解释。
+
+    设计要点（对应简历"知识状态建模：动态调整推荐难度与提示强度"）：
+      * 提示分三档递进：方向 -> 关键观察 -> 伪代码，每档都可单独使用；
+      * 强度由**该题知识点掌握度**决定，而非模型自由发挥；
+      * 不直接给可提交的完整代码 —— 提示的目的是让用户自己写出来。
+    """
+
+    strength: HintStrength = Field(description="提示强度：direction 最弱、pseudocode 最强")
+    hints: list[str] = Field(
+        min_length=1,
+        max_length=3,
+        description="按强度从弱到强的提示，条数与 strength 对应",
+    )
+    key_insight: str = Field(
+        min_length=1, max_length=300, description="一句话点出这题的突破口（不泄露完整解法）"
+    )
+    next_step: str = Field(
+        min_length=1, max_length=200, description="建议用户接下来先做什么（可执行的小步）"
+    )
+    strength_reason: str = Field(
+        min_length=1, max_length=300, description="为什么给这个强度（引用掌握度数字）"
+    )
+    confidence: float = Field(ge=0, le=1, default=0.8)
+
+
+class ReviewPriorityItem(BaseModel):
+    """复习队列里的一项：题目 + 排在第几位 + 为什么。"""
+
+    problem_id: str = Field(min_length=1)
+    title: str = ""
+    order: int = Field(ge=1, description="1 = 今天最先复习")
+    reason: str = Field(min_length=1, max_length=400, description="为什么排这个位置")
+    urgency: str = Field(default="", max_length=80, description="紧迫度标签，如「逾期 6 天」")
+
+
+class ReviewPriorityOut(BaseModel):
+    """复习队列优先 Agent：排序 + 可解释的编排意图。
+
+    与 FSRS 的分工：FSRS 决定"何时到期"，本 Agent 决定"到期后先做哪个"。
+    间隔重复是记忆科学问题，排序是学习策略问题，两者不混在一起。
+    """
+
+    ordered: list[ReviewPriorityItem] = Field(
+        min_length=1, max_length=20, description="按优先级排序的复习清单"
+    )
+    strategy: str = Field(
+        min_length=1, max_length=400, description="整体编排意图（为什么是这个顺序）"
+    )
+    confidence: float = Field(ge=0, le=1, default=0.8)
+
+
+# 代码质量的四个评分维度（固定口径，避免每次评分维度漂移导致不可比）
+QUALITY_DIMENSIONS: list[str] = ["正确性", "可读性", "效率", "边界处理"]
+
+# 两阶段评分的窗口半径：规则分 ± 该值 之内允许 LLM 修正。
+# 取值理由：太小则语义修正无意义（模型只能照抄规则分），太大则规则阶段的
+# 客观约束失效。±12 分意味着"档位不会跨两级"，与难度标注的 ±1 档同思路。
+QUALITY_RADIUS: float = 12.0
+
+
+class QualityDimension(BaseModel):
+    """单个评分维度：分数 + 具体评语（必须点名代码里的具体位置）。"""
+
+    name: str = Field(min_length=1, max_length=20)
+    score: float = Field(ge=0, le=100)
+    comment: str = Field(min_length=1, max_length=300)
+
+
+class QualityOut(BaseModel):
+    """代码质量评分（两阶段）。
+
+    对应简历主张："两阶段评分：确定性问题采用基于规则的评分；
+    开放性问题采用 LLM 语义修正评分。"
+
+    落点说明：
+      * **规则阶段**算的是客观可量化指标（行数、嵌套深度、圈复杂度估算、
+        注释率、变量命名长度）—— 这些是"确定性问题"，不需要模型判断；
+      * **LLM 阶段**做的是语义修正（这段代码的可读性到底如何、边界处理是否
+        周全、有没有更贴合语言习惯的写法）—— 这些是"开放性问题"。
+
+    与判题的分工：判题管"对不对"（AC/WA/TLE），本评分管"好不好"。
+    只有 AC 的代码才值得评质量 —— 错代码谈可读性没有意义。
+    """
+
+    score: float = Field(ge=0, le=100, description="总分 0-100")
+    grade: Literal["优秀", "良好", "合格", "待改进"] = Field(description="等级")
+    dimensions: list[QualityDimension] = Field(
+        min_length=1, max_length=6, description="各维度得分与评语"
+    )
+    summary: str = Field(min_length=1, max_length=400, description="总体评价")
+    top_improvement: str = Field(
+        min_length=1, max_length=300, description="最值得改的一处（可落地）"
+    )
+    confidence: float = Field(ge=0, le=1, default=0.8)
+
+
 SCHEMA_BY_AGENT: dict[str, type[BaseModel]] = {
     "difficulty": DifficultyOut,
     "recommend": RecommendOut,
@@ -145,4 +248,7 @@ SCHEMA_BY_AGENT: dict[str, type[BaseModel]] = {
     "judge": JudgeOut,
     "mastery": MasteryOut,
     "roadmap": RoadmapOut,
+    "hint": HintOut,
+    "review": ReviewPriorityOut,
+    "quality": QualityOut,
 }

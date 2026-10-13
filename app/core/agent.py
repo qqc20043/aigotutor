@@ -41,6 +41,10 @@ class AgentContext:
     temperature: float = 0.2
     task_id: str = ""
     use_cache: bool = True
+    # 学习记忆清单（由 core.memory 预聚合，已是"结论"而非历史流水）。
+    # 单独一个字段而不是塞进 data：它不参与业务逻辑，只参与 prompt 拼接，
+    # 且需要显式控制是否注入（见 BaseAgent.inject_memory）。
+    memory: str = ""
     data: dict[str, Any] = field(default_factory=dict)
 
     def get(self, key: str, default: Any = None) -> Any:
@@ -137,7 +141,7 @@ class BaseAgent(Generic[T]):
                     pass  # 缓存脏了就忽略，重新算
 
         provider = build_provider(ctx.provider, ctx.base_url, ctx.api_key)
-        user_prompt = self.build_user(ctx)
+        user_prompt = self.with_memory(self.build_user(ctx), ctx)
         last_error = ""
         last_kind = ""
 
@@ -210,7 +214,7 @@ class BaseAgent(Generic[T]):
         """
         started = time.perf_counter()
         provider = build_provider(ctx.provider, ctx.base_url, ctx.api_key)
-        user_prompt = self.build_user(ctx)
+        user_prompt = self.with_memory(self.build_user(ctx), ctx)
         yield {"event": "start", "agent": self.name, "provider": provider.name, "model": ctx.model}
 
         parser = IncrementalJSON()
@@ -308,6 +312,21 @@ class BaseAgent(Generic[T]):
     # --------------------------------------------------------------- 可覆盖
     def build_user(self, ctx: AgentContext) -> str:
         return str(ctx.get("prompt", ""))
+
+    # 默认不注入记忆：只有"决策类"Agent 才需要知道用户的历史状态。
+    # 判题归因看的是代码与用例，难度标注看的是题面 —— 给它们塞用户记忆
+    # 只会增加 token 与干扰。子类显式声明 True 才注入。
+    inject_memory: bool = False
+
+    def with_memory(self, prompt: str, ctx: AgentContext) -> str:
+        """把记忆清单拼到 prompt 前面（若该 Agent 需要且记忆非空）。
+
+        放在 prompt **前面**而不是后面：记忆是"背景设定"，先给出背景再给
+        具体任务，模型的遵从度更高；放在末尾容易被当成附注而忽略。
+        """
+        if not self.inject_memory or not ctx.memory:
+            return prompt
+        return f"{ctx.memory}\n\n{prompt}"
 
     def json_schema(self) -> dict[str, Any]:
         schema = self.schema.model_json_schema()
