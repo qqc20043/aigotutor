@@ -144,12 +144,36 @@ def main() -> int:
         ("psutil", "判题内存采样与进程树回收依赖"),
         ("tzdata", "Windows 无系统时区库时的兜底"),
         ("pytest-cov", "覆盖率门禁依赖"),
+        ("langgraph", "多 Agent 编排依赖（缺失则链路无法启动）"),
+        ("redis", "限流/缓存/分布式锁的跨进程实现依赖"),
     ):
         check(f"requirements 含 {pkg}（{why}）", pkg in req)
 
     # ---- 判题后端不应硬依赖 psutil ----
     sub = (ROOT / "app" / "judge" / "subprocess_backend.py").read_text(encoding="utf-8")
     check("psutil 为可选依赖（缺失时不崩）", "except ImportError" in sub)
+
+    # ---- Redis 必须是可选增强：未配置时全部走进程内实现 ----
+    # 这条断言守护项目定位（单机零外部依赖）。若有人把 Redis 改成硬依赖，
+    # `python run.py` 在没起 Redis 的机器上会直接崩 —— 必须挡住。
+    rc = (ROOT / "app" / "core" / "redis_client.py").read_text(encoding="utf-8")
+    check("Redis 未配置时返回 None（优雅降级）", "return None" in rc)
+    check("Redis 连接用 RESP2（兼容 Redis 3.x）", "protocol=2" in rc)
+
+    # ---- 生产 compose 应提供 redis 服务与连接串 ----
+    prod = (ROOT / "docker-compose.prod.yml").read_text(encoding="utf-8")
+    check("生产 compose 含 redis 服务", "redis:" in prod and "image: redis:" in prod)
+    check("生产 compose 配置了 REDIS_URL", "AIGOTUTOR_REDIS_URL" in prod)
+
+    # ---- LangGraph 编排存在且被 pipeline 使用 ----
+    graph = ROOT / "app" / "core" / "graph.py"
+    check("存在 LangGraph 编排模块", graph.exists())
+    if graph.exists():
+        gs = graph.read_text(encoding="utf-8")
+        check("编排使用 StateGraph", "StateGraph" in gs)
+        check("编排声明了状态 reducer（防静默覆盖）", "Annotated" in gs and "operator" in gs)
+    pipe = (ROOT / "app" / "core" / "pipeline.py").read_text(encoding="utf-8")
+    check("pipeline 委托 LangGraph 执行", "run_practice_graph" in pipe)
 
     print(f"\n== 结果: {'全部通过' if not failures else '失败 ' + ', '.join(failures)} ==")
     return 1 if failures else 0

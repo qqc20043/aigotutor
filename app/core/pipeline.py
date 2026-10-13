@@ -12,16 +12,12 @@
 
 from __future__ import annotations
 
-import asyncio
-import time
-from contextlib import suppress
 from typing import Any
 
-from ..agents import CORE_AGENTS, get_agent
+from ..agents import get_agent
 from ..config import settings
 from ..schemas import SCHEMA_BY_AGENT
 from .agent import AgentContext, AgentResult
-from .cache import cache_stats
 from .rules import (
     quality_grade_of,
     rule_difficulty,
@@ -372,109 +368,29 @@ async def practice_pipeline(
 ) -> dict[str, Any]:
     """提交后的一条完整链路，逐步上报进度，任何单点失败都不中断。
 
+    实现已迁移到 LangGraph（见 core/graph.py）：链路形状、条件分支与状态
+    合并都由 StateGraph 表达。本函数保留原签名与返回结构，调用方无感。
+
     返回结构：
         {"agents": {name: result_dict}, "degraded": [...], "failed": [...],
          "degraded_rate": float, "failure_rate": float, "cache": {...},
-         "elapsed_ms": int, "agent_count": int}
+         "elapsed_ms": int, "agent_count": int, "engine": "langgraph"}
     """
-    from .tasks import _advance, _emit
+    from .graph import run_practice_graph
 
-    started = time.perf_counter()
-    agents: dict[str, Any] = {}
-    degraded: list[str] = []
-    failed: list[str] = []
-
-    async def step(name: str, progress: float, coro):
-        """推进度 + 检查中断 + 记录结果；异常一律不向外抛。"""
-        _advance(task, progress, name)
-        if getattr(task, "cancel_requested", False):
-            raise asyncio.CancelledError()
-        try:
-            result = await coro
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:  # 双保险：Agent 层已兜底，这里再兜一次
-            result = {
-                "agent": name,
-                "status": "failed",
-                "degraded": True,
-                "confidence": 0.0,
-                "reason": f"{type(e).__name__}: {e}",
-                "data": None,
-                "tokens": 0,
-                "latency_ms": 0,
-            }
-        agents[name] = result
-        if result.get("status") == "degraded":
-            degraded.append(name)
-        elif result.get("status") == "failed":
-            failed.append(name)
-        if on_result is not None:
-            with suppress(Exception):  # 落库失败不能拖垮链路
-                await on_result(name, result)
-        return result
-
-    # 1) 判错归因
-    await step("judge", 0.15, judge_submission(user_id, config, submission, problem))
-    # 2) 学习状态
-    await step(
-        "mastery",
-        0.40,
-        analyze_mastery(
-            user_id,
-            config,
-            tag_stats=tag_stats,
-            total_submissions=submission.get("total_submissions", 0),
-            ac_count=submission.get("ac_count", 0),
-            avg_difficulty_score=problem.get("difficulty_score", 0.0),
-            recent_verdicts=submission.get("recent_verdicts", []),
-        ),
+    return await run_practice_graph(
+        task,
+        user_id=user_id,
+        config=config,
+        submission=submission,
+        problem=problem,
+        tag_stats=tag_stats,
+        tags=tags,
+        candidates=candidates,
+        mastery_scores=mastery_scores,
+        weeks=weeks,
+        on_result=on_result,
     )
-    # 3) 下一题推荐
-    if candidates:
-        await step(
-            "recommend",
-            0.65,
-            recommend_next(
-                user_id,
-                config,
-                candidates=candidates,
-                mastery=mastery_scores or {},
-                recent_problem_ids=submission.get("recent_problem_ids", []),
-            ),
-        )
-    # 4) 路线图（按需）
-    if tags:
-        await step(
-            "roadmap",
-            0.88,
-            build_roadmap(
-                user_id,
-                config,
-                tags=tags,
-                mastery=mastery_scores or {},
-                weeks=weeks,
-            ),
-        )
-
-    _advance(task, 1.0, "finished")
-    elapsed_ms = int((time.perf_counter() - started) * 1000)
-    summary = {
-        "agents": agents,
-        "degraded": degraded,
-        "failed": failed,
-        "degraded_rate": round(len(degraded) / max(1, len(agents)), 4),
-        "failure_rate": round(len(failed) / max(1, len(agents)), 4),
-        "cache": cache_stats(),
-        "elapsed_ms": elapsed_ms,
-        # agent_count 是**本次链路实际执行**的 Agent 数（judge/mastery/推荐/路线图
-        # 按候选与标签是否存在而增减），不是 Agent 总数 —— 早期版本填的是
-        # len(CORE_AGENTS)，那是个静态常量，与本次实际执行情况无关，会误导。
-        "agent_count": len(agents),
-        "core_agent_total": len(CORE_AGENTS),
-    }
-    _emit(task, "summary", summary)
-    return summary
 
 
 # ------------------------------------------------------------------ 路由决策

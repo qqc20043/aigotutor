@@ -15,6 +15,12 @@ sqlalchemy[asyncio]>=2.0
 aiosqlite>=0.19
 httpx>=0.26
 alembic>=1.13
+# 多 Agent 编排（StateGraph + 条件边 + 状态 reducer）
+langgraph>=0.2
+# Redis 客户端：限流/缓存/分布式锁的跨进程实现。
+# 未配置 AIGOTUTOR_REDIS_URL 时不使用它（进程内实现），因此缺失不致命 ——
+# 但 multi-worker 部署需要，故列为正式依赖。
+redis>=5.0
 # 判题内存采样与进程树回收；缺失时后端会退化为"仅超时"，不会崩
 psutil>=5.9
 # Windows 的 zoneinfo 没有系统时区库，打卡/报告的本地日界依赖它

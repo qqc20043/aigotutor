@@ -1,6 +1,8 @@
 # AIgoTutor · 多智能体算法刷题平台
 
-对简历「AIgoTutor 多智能体刷题平台」描述的**完整可运行实现**。Python 3.13 + FastAPI + SQLAlchemy 2.0 + SQLite(WAL) 后端，Vue3 + TypeScript + Vite + Element Plus 前端，**零外部服务依赖**，无需任何 API Key 即可跑通全链路（内置 Mock Provider）。
+对简历「AIgoTutor 多智能体刷题平台」描述的**完整可运行实现**。Python 3.13 + FastAPI + SQLAlchemy 2.0 + SQLite(WAL) 后端，Vue3 + TypeScript + **Vite 6** + Element Plus 前端，**零外部服务依赖**（Redis 为可选增强），无需任何 API Key 即可跑通全链路（内置 Mock Provider）。
+
+编排层用 **LangGraph StateGraph** 表达多 Agent 依赖与条件分支（见 `core/graph.py`）。
 
 ## 快速开始
 
@@ -24,7 +26,7 @@ python run.py                     # http://127.0.0.1:8000
 
 ```bash
 # 5. 验证
-python -m pytest                      # 266 项单元 + 集成测试
+python -m pytest                      # 281 项单元 + 集成测试
 python -m pytest --cov=app            # 覆盖率（CI 阈值 75%）
 python -m ruff check .                # 代码质量（0 告警）
 python scripts/judge_selftest.py      # 判题沙箱自测 10/10
@@ -233,6 +235,54 @@ docker compose -f docker-compose.prod.yml up -d --build
 
 镜像特性：多阶段构建（前端产物从构建阶段拷贝，运行镜像不含 node_modules）、非 root 运行、健康检查、tmpfs 判题目录。
 
+### Redis（可选增强，多 worker 部署建议开启）
+
+```bash
+export AIGOTUTOR_REDIS_URL=redis://127.0.0.1:6379/0
+python run.py
+# 运行态会显示：cache: {"backend": "redis", ...}
+```
+
+**Redis 是可选增强，不是必需依赖** —— 这条原则决定了实现方式：
+
+| 能力 | 未配置 Redis | 配置 Redis 后 |
+|---|---|---|
+| 限流计数 | 进程内滑动窗口 | Redis ZSET 跨进程共享（`--workers N` 全局一致） |
+| 结果缓存 | 进程内 LRU | Redis 共享（重启不丢，多 worker 命中率更高） |
+| 写事务锁 | 进程内 `asyncio.Lock` | 分布式锁（SET NX PX + Lua 校验释放） |
+
+三个实现细节（都是踩过或想清楚才这么写的）：
+
+1. **降级而不是报错**：连不上 Redis 时只警告一次，之后静默回落进程内 —— 单机开发
+   （`python run.py`，零外部服务）与多 worker 生产跑**同一份代码**，不需要维护两套实现；
+2. **限流 fail-open**：Redis 抖动时限流回落进程内而不是直接拒绝。限流是保护措施不是业务逻辑，
+   把用户全拒掉（fail-closed）的伤害远大于短时失去保护；
+3. **兼容 Redis 3.x**：微软移植版 3.0 不支持 RESP3 的 `HELLO` 握手，连接时显式 `protocol=2`。
+
+### LangGraph 编排（`core/graph.py`）
+
+刷题闭环用 `StateGraph` 表达，而非手写顺序调用：
+
+```
+START → judge → mastery ─┬─(有候选)→ recommend ─┬─(有标签)→ roadmap → END
+                          │                       └─────────→ END
+                          ├─(有标签)→ roadmap ────→ END
+                          └─→ END
+```
+
+**为什么值得用图**（面试会问）：
+
+1. **依赖关系显式化**：链路形状写在 `add_edge` 里，而不是藏在函数调用顺序里；
+2. **条件分支是一等公民**："有候选才推荐"、"有标签才画路线图"是真实的条件逻辑，
+   图实现是 `add_conditional_edges`，加节点时不必改动控制流代码；
+3. **状态合并交给 reducer**：`PipelineState` 用 `Annotated[dict, operator.or_]` 声明累加语义。
+   LangGraph 默认是"后写覆盖"，若不声明 reducer，第二个节点会覆盖第一个的产出，
+   汇总统计**静默变少且不报错** —— 这是最容易踩的坑。
+
+**与降级机制的分层**：降级仍在 Agent 层完成（`BaseAgent.run` 内部重试→校验→规则兜底），
+图只负责编排。图节点里另有一层 `try/except` 不是替代 Agent 降级，而是防止 Agent 层意外抛出
+把整张图打断（双保险）。
+
 ## 简历主张 → 实现对照
 
 | 简历原文 | 实现位置 | 验证方式 |
@@ -250,6 +300,8 @@ docker compose -f docker-compose.prod.yml up -d --build
 | **记忆注入：清单仅保留关键字符，避免全量历史注入导致 Token 暴涨** | `core/memory.py`：把历史离线聚合成短清单（薄弱点/易错模式/趋势），只注入结论；实测 81 次提交压到 ~87 token | `test_memory_token_budget_independent_of_history_size`、`test_memory_block_is_conclusion_not_history` |
 | 多用户 + 用户级模型配置 | `models.py::UserModelConfig`、`deps.py` | `test_model_config_masks_api_key` |
 | OpenAI / Anthropic / Gemini 三协议兼容 | `core/providers.py` | `test_build_provider_all_protocols`、`test_gemini_schema_narrowing` |
+| **多 Agent 统一基于 LangGraph 编排** | `core/graph.py`（StateGraph + 条件边 + reducer 状态合并） | `test_graph_conditional_*`、`test_graph_state_reducer_accumulates_all_nodes` |
+| **Redis**（限流/缓存/分布式锁） | `core/redis_client.py`、`middleware.py`、`core/cache.py`、`core/lock.py` | `test_rate_limiter_falls_back_to_local`、`test_lock_falls_back_to_local` |
 | 长链路后台任务 + 轮询 + 流式 + 中断 | `core/tasks.py`、`api/agent.py` | `test_pipeline_async_task_and_sse`、`test_pipeline_task_cancel` |
 
 ## 架构
@@ -351,7 +403,7 @@ clamped = clamp_to_window(model_out, (lo, hi))
 
 | 指标 | 实测值 | 命令 |
 |---|---|---|
-| 单元 + 集成测试 | **266 项通过 / 7 项按环境跳过** | `python -m pytest` |
+| 单元 + 集成测试 | **281 项通过 / 7 项按环境跳过** | `python -m pytest` |
 | 测试覆盖率 | **76%**（CI 门禁 `--cov-fail-under=75`） | `python -m pytest --cov=app` |
 | 代码质量 | **ruff 0 告警**（check + format 双通过） | `python -m ruff check .` |
 | 判题沙箱自测 | **10/10**（Python 7 种 verdict + Java 3 种） | `python scripts/judge_selftest.py` |
@@ -425,16 +477,18 @@ uvicorn app.main:app --port 8000 --loop asyncio:ProactorEventLoop   # 需要热�
 | subprocess 隔离弱 | 见上。接口会标注 `isolation=weak`，不制造错误的安全感。 |
 | C++ 需自备 g++ | 本机无 g++ 时该语言返回明确错误；装上即自动可用（启动时探测）。 |
 | Docker 后端未实测 | 本机无 Docker，代码已实现但未在真实 Docker 上验证。 |
-| 多 worker | 写锁与任务表是进程内的；`uvicorn --workers N` 需换 MySQL/Postgres 或 Redis 锁。 |
-| 限流为单进程内存态 | 滑动窗口计数在进程内，多 worker 会各自计数，需换 Redis 才能全局生效。 |
+| ~~多 worker~~ | **已支持**：配置 `AIGOTUTOR_REDIS_URL` 后写锁升级为跨进程分布式锁（`core/lock.py`，SET NX PX + Lua 校验释放）。未配置时回落进程内锁 —— 单机开发零依赖，多 worker 部署需配 Redis。 |
+| ~~限流为单进程内存态~~ | **已支持**：配置 Redis 后滑动窗口走 ZSET 跨进程共享（`middleware.py::_check_redis`）。Redis 抖动时 fail-open 回落进程内，不把用户全拒掉。 |
+| 结果缓存单机 | 同上：配置 Redis 后结果缓存跨进程共享（重启不丢、多 worker 命中率更高）；未配置时用进程内 LRU。 |
 | 排行榜按 UTC 日界 | 窗口统计用 UTC 零点切分，跨时区用户的"今日"与个人日界可能不一致，接口已附说明。 |
 | 通知无外部推送 | 站内通知 + 打卡提醒在应用内产生，未接邮件/短信/WebPush 通道。 |
 | 导入不联网抓取 | 题面需粘贴或上传文本，不做远端 URL 抓取（离线可用 + 规避爬虫风险）。 |
 | 无向量检索 | 题库检索用 `LIKE` + 标签；错题聚类用标签组合指纹（对强结构化数据比语义相似度更准且零成本）。 |
 | FSRS 为简化版 | 保留 S/D/R 三参数，曲线与调度行为正确，但与 Anki 官方参数不可逐位对齐。 |
 | 可选依赖缺失会静默降级 | `psutil` 缺失 → Windows 内存采样失效，MLE 会被判成 TLE；`alembic` 缺失 → 迁移验收失败；`tzdata` 缺失 → 打卡日界报时区错误。三者已写进 `requirements.txt`，并由 `check_deploy.py` 断言钉住，防止有人"精简依赖"时踩坑。 |
+| Redis 3.x 兼容 | 微软移植版 Redis 3.0 不支持 RESP3 的 HELLO 握手，连接时显式用 `protocol=2`（实测踩到）。Redis 6+ 同样兼容 RESP2。 |
 
-## 接口清单（73 个业务接口 / 66 条路由）
+## 接口清单（75 个业务接口 / 68 条路由）
 
 > `scripts/check_routes.py` 直接遍历 FastAPI 路由表统计，非手工维护。
 

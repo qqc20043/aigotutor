@@ -18,6 +18,37 @@
 #   本文件采用 B 并在注释中标注风险，A 方案见 README 的部署章节。
 
 services:
+  # Redis：限流计数、结果缓存与写事务锁的跨进程共享。
+  # 单实例部署可以不启（app 会自动降级为进程内实现），
+  # 但一旦用 `--workers N` 或水平扩容，就应当启用 —— 否则限流与写锁
+  # 各进程独立，失去全局一致性。
+  redis:
+    image: redis:7-alpine
+    container_name: aigotutor-redis
+    # 只在内网暴露，不映射到宿主（app 通过服务名访问）
+    expose:
+      - "6379"
+    command:
+      # 小实例够用的配置：限制内存 + LRU 淘汰，避免缓存把内存吃光
+      - redis-server
+      - --maxmemory
+      - 256mb
+      - --maxmemory-policy
+      - allkeys-lru
+      - --appendonly
+      - "no"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+
   app:
     build:
       context: .
@@ -42,6 +73,11 @@ services:
       AIGOTUTOR_JUDGE_IMAGE: python:3.13-slim
       AIGOTUTOR_JUDGE_TIMEOUT: "10"
       AIGOTUTOR_JUDGE_MEMORY: "256"
+      # 指向上面的 redis 服务：限流/缓存/写锁跨进程共享
+      AIGOTUTOR_REDIS_URL: redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs

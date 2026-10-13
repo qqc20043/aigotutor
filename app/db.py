@@ -11,11 +11,15 @@
   所以"单写队列"是空头承诺。这里改成在事务提交层接入 —— 因为要串行化的
   不是单次 flush，而是"事务提交"这个真正抢数据库写锁的动作。
   这样 service 层的 33 处写操作无需逐个改动，也不会漏。
+
+写锁的作用域（B 档升级）：
+  锁的实现交给 core.lock.distributed_lock —— 配置 Redis 时是跨进程分布式锁，
+  未配置时是进程内 asyncio.Lock。因此 `uvicorn --workers N` 下写事务依然
+  全局串行（此前 README 把它列为已知边界）。
 """
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -28,27 +32,14 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from .config import settings
+from .core.lock import distributed_lock
 from .models import Base
 
 _engine: AsyncEngine | None = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
 
-# 全局写锁：同一进程内所有写事务串行提交。
-# 与事件循环绑定，循环更换时自动重建（测试每例新 loop）。
-_write_lock: asyncio.Lock | None = None
-_write_lock_loop: asyncio.AbstractEventLoop | None = None
 # 统计：便于观测与压测断言
 _stats = {"write_tx": 0, "read_tx": 0, "rollback": 0}
-
-
-def _get_write_lock() -> asyncio.Lock:
-    """取当前事件循环的写锁；循环变化则重建。"""
-    global _write_lock, _write_lock_loop
-    loop = asyncio.get_running_loop()
-    if _write_lock is None or _write_lock_loop is not loop:
-        _write_lock = asyncio.Lock()
-        _write_lock_loop = loop
-    return _write_lock
 
 
 def get_engine() -> AsyncEngine:
@@ -90,9 +81,10 @@ async def _commit_serialized(session: AsyncSession) -> None:
     正确做法：flush 会把变更送进当前事务，因此只要事务内有任何 SQL，
     就一定需要提交。这里改用 session 的事务状态判断，宁可多提交一次
     空事务，也绝不漏提交。（空事务提交代价极低，数据丢失不可接受。）
+
+    锁的作用域见模块 docstring：Redis 可用时跨进程，否则进程内。
     """
-    lock = _get_write_lock()
-    async with lock:
+    async with distributed_lock("write"):
         _stats["write_tx"] += 1
         await session.commit()
 

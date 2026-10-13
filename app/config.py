@@ -57,6 +57,14 @@ class Settings:
     DEDUP_WINDOW_SECONDS: int = int(_env("AIGOTUTOR_DEDUP_WINDOW", "30"))
     MAX_REQUEST_BYTES: int = int(_env("AIGOTUTOR_MAX_REQUEST_BYTES", str(2 * 1024 * 1024)))
 
+    # --- Redis（可选增强，留空则全部走进程内实现）---
+    # 配置后：限流计数与结果缓存跨进程共享，支持 uvicorn --workers N
+    # 未配置/连不上：自动降级为进程内，单机开发无需任何外部服务
+    REDIS_URL: str = _env("AIGOTUTOR_REDIS_URL", "")
+    REDIS_TIMEOUT: float = float(_env("AIGOTUTOR_REDIS_TIMEOUT", "3"))
+    # 结果缓存的键前缀（避免与同实例上的其它应用撞键）
+    REDIS_PREFIX: str = _env("AIGOTUTOR_REDIS_PREFIX", "aigotutor")
+
     # --- 可观测性 ---
     # 本地开发用人类可读日志；生产置 1 输出 JSON 便于采集
     LOG_JSON: bool = _env("AIGOTUTOR_LOG_JSON", "0") == "1"

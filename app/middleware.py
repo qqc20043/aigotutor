@@ -9,7 +9,8 @@
   相比固定窗口，不会出现"窗口边界突发双倍流量"的问题；
   相比令牌桶，实现更简单且行为更直观（对使用者而言"每分钟 N 次"更好理解）。
 
-存储：进程内字典。多 worker 部署时应换 Redis —— 已在文档中标注。
+存储：配置 AIGOTUTOR_REDIS_URL 时走 Redis（跨进程共享，支持多 worker）；
+  未配置或连不上时自动降级为进程内字典，单机开发零外部依赖。
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from .config import settings
+from .core.redis_client import get_redis
 
 # ------------------------------------------------------------------ 路由分组
 # 不同接口的限流强度不同：写/LLM 接口消耗真实资源，读接口应该宽松。
@@ -75,7 +77,17 @@ class Window:
 
 
 class RateLimiter:
-    """按 key 的滑动窗口限流器。"""
+    """按 key 的滑动窗口限流器。
+
+    存储策略（自动选择，调用方无感）：
+      * 配置了 Redis 且可用 -> 用 Redis 有序集合做跨进程共享的滑动窗口，
+        此时 `uvicorn --workers N` 的限流全局一致（README 曾把它列为已知边界）；
+      * 否则 -> 进程内字典，单机开发零依赖。
+
+    为什么用有序集合而不是计数器：滑动窗口需要"窗口内每个请求的时间戳"
+    才能精确判断过期。ZSET 的 score 存时间戳、member 存唯一请求 ID，
+    ZREMRANGEBYSCORE 清过期、ZCARD 数当前量 —— 三条命令一次流水线完成。
+    """
 
     def __init__(self, window_seconds: float = 60.0) -> None:
         self.window = window_seconds
@@ -86,6 +98,20 @@ class RateLimiter:
         self.rejected = 0
 
     def check(self, key: str, limit: int) -> tuple[bool, int]:
+        client = get_redis()
+        if client is not None:
+            result = self._check_redis(client, key, limit)
+            if result is not None:
+                ok, remaining = result
+                if ok:
+                    self.allowed += 1
+                else:
+                    self.rejected += 1
+                return ok, remaining
+            # Redis 出错 -> 回落到进程内（见 _check_redis 的说明）
+        return self._check_local(key, limit)
+
+    def _check_local(self, key: str, limit: int) -> tuple[bool, int]:
         now = time.time()
         self._maybe_sweep(now)
         ok, remaining = self._buckets[key].allow(limit, self.window, now)
@@ -94,6 +120,35 @@ class RateLimiter:
         else:
             self.rejected += 1
         return ok, remaining
+
+    def _check_redis(self, client: Any, key: str, limit: int) -> tuple[bool, int] | None:
+        """Redis 版滑动窗口。出错时返回 None，由调用方回落到进程内实现。
+
+        为什么出错要回落而不是直接拒绝：限流是保护措施，不是业务逻辑。
+        Redis 抖动时把用户全部拒掉（fail-closed）造成的伤害远大于短时限流
+        失效（fail-open）—— 后者只是短暂失去保护，前者是服务不可用。
+        """
+        import uuid as _uuid
+
+        now = time.time()
+        cutoff = now - self.window
+        zkey = f"{settings.REDIS_PREFIX}:rl:{key}"
+        member = f"{now}:{_uuid.uuid4().hex[:8]}"
+        try:
+            pipe = client.pipeline()
+            pipe.zremrangebyscore(zkey, 0, cutoff)  # 清过期
+            pipe.zcard(zkey)  # 数当前窗口内请求数
+            pipe.zadd(zkey, {member: now})  # 记录本次
+            pipe.expire(zkey, int(self.window) + 1)
+            results = pipe.execute()
+            current = int(results[1])
+            if current >= limit:
+                # 超限：把刚加进去的这条撤掉，不让它占用下一次的额度
+                client.zrem(zkey, member)
+                return False, 0
+            return True, max(0, limit - current - 1)
+        except Exception:
+            return None
 
     def _maybe_sweep(self, now: float) -> None:
         """定期清理过期桶，防止内存无限增长（被扫的 key 可能是一次性 IP）。
