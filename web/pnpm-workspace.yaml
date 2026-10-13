@@ -1,5 +1,11 @@
-# pnpm 11 起，构建脚本白名单配置移到这里（package.json 的 pnpm 字段已不再读取）。
-#
+# 本仓库不是 monorepo，但 pnpm 会把 pnpm-workspace.yaml 当 workspace 配置解析：
+# 缺 packages 字段时，pnpm 9 直接报 "packages field missing or empty" 并退出
+# （CI 实测踩到；本机 pnpm 11 宽容，所以本地一直正常）。
+# "." 表示 workspace 根目录本身就是唯一的包，语义准确。
+packages:
+  - "."
+
+# 构建脚本白名单（pnpm 10+ 语法）。
 # 必须放行 esbuild：它需要下载平台二进制，缺它 vite 无法构建。
 # vue-demi 需要按 Vue 版本切换实现。
 # 其余包保持拦截 —— 不放宽整体策略，只放行这两个已知必要的。

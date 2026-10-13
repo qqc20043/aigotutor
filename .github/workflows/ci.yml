@@ -127,11 +127,14 @@ jobs:
 
       - uses: pnpm/action-setup@v4
         with:
-          version: 9
+          # 锁到与本机验证一致的版本：pnpm 9 会把 pnpm-workspace.yaml 当作
+          # 需要 packages 字段的 workspace 配置（报 "packages field missing or
+          # empty"），且不认识 allowBuilds 语法（10+ 才有）。版本漂移会再次踩坑。
+          version: 11
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: pnpm
           cache-dependency-path: web/pnpm-lock.yaml
 

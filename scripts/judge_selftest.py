@@ -46,6 +46,24 @@ public class Main {
 """
 JA_CE = "public class Main { public static void main(String[] a) { int x = ; } }"
 
+CPP_AC = """#include <iostream>
+int main() {
+    int a, b;
+    std::cin >> a >> b;
+    std::cout << a + b << std::endl;
+    return 0;
+}
+"""
+CPP_WA = """#include <iostream>
+int main() {
+    int a, b;
+    std::cin >> a >> b;
+    std::cout << a * b << std::endl;
+    return 0;
+}
+"""
+CPP_CE = "int main() { int x = ; }"
+
 CASES = [
     TestCase(id="c1", input_data="1 2\n", expected_output="3\n"),
     TestCase(id="c2", input_data="100 200\n", expected_output="300\n"),
@@ -66,7 +84,22 @@ SCENARIOS = {
         ("WA  错误实现", JA_WA, "WA", 3000),
         ("CE  语法错误", JA_CE, "CE", 3000),
     ],
+    "cpp": [
+        ("AC  正确实现", CPP_AC, "AC", 1000),
+        ("WA  错误实现", CPP_WA, "WA", 1000),
+        ("CE  语法错误", CPP_CE, "CE", 1000),
+    ],
 }
+
+
+def _scenarios_for(language: str) -> list[tuple[str, str, str, int]]:
+    """取某语言的场景清单；没有定义场景时返回空列表而不是抛 KeyError。
+
+    真实故障：脚本按后端上报的 languages 遍历，而 SCENARIOS 只覆盖 python/java；
+    在装了 g++ 的机器（如 CI 的 ubuntu runner）上直接 KeyError: 'cpp' 崩溃。
+    本机没有 g++ 所以一直没暴露 —— 缺少场景应当"跳过并说明"，而不是让整个自测挂掉。
+    """
+    return SCENARIOS.get(language, [])
 
 
 async def main() -> int:
@@ -95,8 +128,12 @@ async def main() -> int:
         if lang not in info["languages"]:
             print(f"\n跳过 {lang}（本机不可用）")
             continue
+        scenarios = _scenarios_for(lang)
+        if not scenarios:
+            print(f"\n跳过 {lang}（本脚本未定义该语言的测试场景）")
+            continue
         print(f"\n== {lang} ==")
-        for name, code, expect, tl in SCENARIOS[lang]:
+        for name, code, expect, tl in scenarios:
             req = JudgeRequest(
                 language=lang,
                 code=code,

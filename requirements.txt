@@ -8,7 +8,10 @@
 fastapi>=0.110
 uvicorn[standard]>=0.27
 pydantic>=2.6
-sqlalchemy>=2.0
+# 必须带 [asyncio] extra：SQLAlchemy 的异步引擎依赖 greenlet，
+# 漏装时不是"降级"而是启动即崩 —— `ModuleNotFoundError: No module named
+# 'greenlet'`，且报错出现在 import 阶段，本地装了别的包时容易掩盖（CI 实测踩到）。
+sqlalchemy[asyncio]>=2.0
 aiosqlite>=0.19
 httpx>=0.26
 alembic>=1.13
