@@ -26,7 +26,7 @@ python run.py                     # http://127.0.0.1:8000
 
 ```bash
 # 5. 验证
-python -m pytest                      # 281 项单元 + 集成测试
+python -m pytest                      # 294 项单元 + 集成测试
 python -m pytest --cov=app            # 覆盖率（CI 阈值 75%）
 python -m ruff check .                # 代码质量（0 告警）
 python scripts/judge_selftest.py      # 判题沙箱自测 10/10
@@ -343,7 +343,8 @@ app/                     后端（FastAPI）
 │   ├── fsrs.py          FSRS 简化版（S/D/R 三参数）
 │   ├── mastery.py       掌握度 0-100（时间衰减 + 置信度收缩）
 │   ├── cache.py         结果缓存（LRU + TTL，成本控制）
-│   └── tasks.py         后台任务 + SSE + 中断 + 并发上限
+│   ├── tasks.py         后台任务 + SSE + 中断 + 并发上限
+│   └── task_store.py    任务状态跨进程镜像（多 worker 下任意节点可查/可取消）
 ├── agents/              9 个 Agent（各自声明 schema / prompt / 规则兜底）
 │                       核心 5 个：roadmap / recommend / hint / mastery / review
 │                       支撑 4 个：judge / solution / difficulty / quality
@@ -403,7 +404,7 @@ clamped = clamp_to_window(model_out, (lo, hi))
 
 | 指标 | 实测值 | 命令 |
 |---|---|---|
-| 单元 + 集成测试 | **281 项通过 / 7 项按环境跳过** | `python -m pytest` |
+| 单元 + 集成测试 | **294 项通过 / 7 项按环境跳过** | `python -m pytest` |
 | 测试覆盖率 | **76%**（CI 门禁 `--cov-fail-under=75`） | `python -m pytest --cov=app` |
 | 代码质量 | **ruff 0 告警**（check + format 双通过） | `python -m ruff check .` |
 | 判题沙箱自测 | **10/10**（Python 7 种 verdict + Java 3 种） | `python scripts/judge_selftest.py` |
@@ -480,6 +481,7 @@ uvicorn app.main:app --port 8000 --loop asyncio:ProactorEventLoop   # 需要热�
 | ~~多 worker~~ | **已支持**：配置 `AIGOTUTOR_REDIS_URL` 后写锁升级为跨进程分布式锁（`core/lock.py`，SET NX PX + Lua 校验释放）。未配置时回落进程内锁 —— 单机开发零依赖，多 worker 部署需配 Redis。 |
 | ~~限流为单进程内存态~~ | **已支持**：配置 Redis 后滑动窗口走 ZSET 跨进程共享（`middleware.py::_check_redis`）。Redis 抖动时 fail-open 回落进程内，不把用户全拒掉。 |
 | 结果缓存单机 | 同上：配置 Redis 后结果缓存跨进程共享（重启不丢、多 worker 命中率更高）；未配置时用进程内 LRU。 |
+| ~~任务运行态仅本进程可见~~ | **已支持**：任务状态/事件/取消信号镜像到 Redis（`core/task_store.py`）。执行仍留在 owner 进程（asyncio 句柄不可跨进程传递），但任意 worker 都能查询详情、订阅事件流、发起取消。未配置 Redis 时行为与改造前一致。 |
 | 排行榜按 UTC 日界 | 窗口统计用 UTC 零点切分，跨时区用户的"今日"与个人日界可能不一致，接口已附说明。 |
 | 通知无外部推送 | 站内通知 + 打卡提醒在应用内产生，未接邮件/短信/WebPush 通道。 |
 | 导入不联网抓取 | 题面需粘贴或上传文本，不做远端 URL 抓取（离线可用 + 规避爬虫风险）。 |

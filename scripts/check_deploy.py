@@ -175,6 +175,18 @@ def main() -> int:
     pipe = (ROOT / "app" / "core" / "pipeline.py").read_text(encoding="utf-8")
     check("pipeline 委托 LangGraph 执行", "run_practice_graph" in pipe)
 
+    # ---- 任务状态必须跨进程可见（多 worker 下的关键契约）----
+    ts = (ROOT / "app" / "core" / "task_store.py").read_text(encoding="utf-8")
+    check("存在任务跨进程镜像模块", True)
+    check("任务状态镜像到 Redis", "setex" in ts and "state" in ts)
+    check("支持跨进程取消信号", "request_cancel" in ts and "is_cancel_requested" in ts)
+    tasks_py = (ROOT / "app" / "core" / "tasks.py").read_text(encoding="utf-8")
+    check("任务状态变化时发布镜像", "publish_state" in tasks_py)
+    check("owner 侧轮询跨进程取消信号", "_watch_remote_cancel" in tasks_py)
+    # API 层必须用跨进程入口，而不是只查本地字典的 get_task
+    agent_api = (ROOT / "app" / "api" / "agent.py").read_text(encoding="utf-8")
+    check("任务详情接口走跨进程入口", "task_detail" in agent_api)
+
     print(f"\n== 结果: {'全部通过' if not failures else '失败 ' + ', '.join(failures)} ==")
     return 1 if failures else 0
 

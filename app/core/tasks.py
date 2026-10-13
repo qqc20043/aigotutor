@@ -8,6 +8,12 @@
 上一版曾在此实现 serialize_write() 但从未接线，已删除 —— 保留一份不生效的
 实现比没有更危险，它会让文档与注释撒谎。
 
+多 worker 支持（见 core/task_store.py）：
+  **执行留在本进程**（asyncio 句柄不可跨进程传递），但状态/事件/取消信号镜像到
+  Redis。于是任意 worker 都能查询任务详情、订阅事件流、发起取消 —— 解决
+  "提交在 A、轮询被负载均衡到 B 就 404"的问题。未配置 Redis 时全部走进程内，
+  行为与改造前完全一致。
+
 对外契约：
   submit(kind, payload, user_id) -> task_id
   events(task_id) -> AsyncIterator[dict]   # SSE
@@ -26,6 +32,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..config import settings
+from . import task_store
 
 # 任务状态锁：_TASKS 会被多个协程读写（提交/取消/SSE 轮询），需要保护
 _tasks_guard = asyncio.Lock()
@@ -75,23 +82,77 @@ _TASKS: dict[str, TaskState] = {}
 
 
 def get_task(task_id: str) -> TaskState | None:
+    """取任务对象。**只在本进程有效** —— 跨进程查询请用 task_detail()。"""
     return _TASKS.get(task_id)
 
 
+def task_detail(task_id: str) -> dict[str, Any] | None:
+    """跨进程的任务快照：本地有则用本地（最新），否则从 Redis 镜像读。
+
+    这个函数是 API 层应当使用的入口 —— 用 get_task() 会让多 worker 部署下
+    轮询随机 404（本地字典里没有别的 worker 创建的任务）。
+    """
+    task = _TASKS.get(task_id)
+    if task is not None:
+        return task.snapshot()
+    return task_store.read_state(task_id)
+
+
 def list_tasks(user_id: str = "", limit: int = 50) -> list[dict[str, Any]]:
-    items = [t for t in _TASKS.values() if not user_id or t.user_id == user_id]
-    items.sort(key=lambda t: t.created_at, reverse=True)
-    return [t.snapshot() for t in items[:limit]]
+    """列出任务（本地 + Redis 镜像合并，按创建时间倒序）。
+
+    合并策略：本地任务优先（信息最新），Redis 里补上"别的 worker 创建的"。
+    同一 task_id 只出现一次。
+    """
+    merged: dict[str, dict[str, Any]] = {}
+    for t in _TASKS.values():
+        if not user_id or t.user_id == user_id:
+            merged[t.id] = t.snapshot()
+
+    if user_id:
+        # Redis 侧：先清理过期索引，再逐个读状态
+        task_store.cleanup_expired_index(user_id)
+        for tid in task_store.list_user_task_ids(user_id, limit=limit):
+            if tid in merged:
+                continue
+            state = task_store.read_state(tid)
+            if state is not None:
+                merged[tid] = _state_to_snapshot(state)
+
+    items = sorted(merged.values(), key=lambda s: s.get("created_at", 0), reverse=True)
+    return items[:limit]
+
+
+def _state_to_snapshot(state: dict[str, Any]) -> dict[str, Any]:
+    """把 Redis 镜像状态转成与 TaskState.snapshot() 同构的 dict。"""
+    created = float(state.get("created_at") or 0)
+    finished = state.get("finished_at")
+    status = str(state.get("status", "pending"))
+    return {
+        "task_id": state.get("task_id", ""),
+        "status": status,
+        "progress": float(state.get("progress") or 0),
+        "stage": state.get("stage", ""),
+        "error": state.get("error", ""),
+        "result": state.get("result") if status in ("done", "failed") else {},
+        "elapsed_ms": int(((finished or time.time()) - created) * 1000),
+        "created_at": created,
+        "owner": state.get("owner", ""),
+    }
 
 
 def _emit(task: TaskState, event: str, data: dict[str, Any] | None = None) -> None:
-    task.events.append({"event": event, "data": data or {}, "ts": round(time.time(), 4)})
+    evt = {"event": event, "data": data or {}, "ts": round(time.time(), 4)}
+    task.events.append(evt)
+    # 同步镜像到 Redis（未配置时是 no-op）
+    task_store.publish_event(task.id, evt)
 
 
 def _advance(task: TaskState, progress: float, stage: str) -> None:
     task.progress = max(task.progress, min(1.0, progress))
     task.stage = stage
     _emit(task, "progress", {"progress": task.progress, "stage": stage})
+    task_store.publish_state(task)
 
 
 # --------------------------------------------------------------- 任务执行
@@ -130,6 +191,7 @@ def submit(
     task = TaskState(id=tid, user_id=user_id, kind=kind, payload=payload or {})
     _TASKS[tid] = task
     _emit(task, "created", {"kind": kind})
+    task_store.publish_state(task)  # 让别的 worker 立刻能查到（含 user_id 索引）
     task.handle = asyncio.create_task(_run(task, pipeline))
     return task
 
@@ -139,6 +201,7 @@ async def _run(task: TaskState, pipeline: Pipeline) -> None:
     if sem.locked():
         task.stage = "queued"
         _emit(task, "queued", {"reason": f"并发已达上限 {_concurrency_limit}，排队中"})
+        task_store.publish_state(task)
     async with sem:
         await _run_inner(task, pipeline)
 
@@ -146,7 +209,12 @@ async def _run(task: TaskState, pipeline: Pipeline) -> None:
 async def _run_inner(task: TaskState, pipeline: Pipeline) -> None:
     task.status = "running"
     _emit(task, "started", {})
+    task_store.publish_state(task)
+    watcher: asyncio.Task | None = None
     try:
+        # 跨进程取消：别的 worker 收到 cancel 请求时写 Redis 信号，
+        # 由 owner 侧这个轮询任务感知并取消本地句柄（句柄不能跨进程传）。
+        watcher = asyncio.create_task(_watch_remote_cancel(task))
         result = await pipeline(task)
         if task.cancel_requested:
             task.status = "cancelled"
@@ -168,36 +236,113 @@ async def _run_inner(task: TaskState, pipeline: Pipeline) -> None:
         task.finished_at = time.time()
         if task.handle is not None:
             task.handle = None
+        if watcher is not None and not watcher.done():
+            watcher.cancel()
+        task_store.publish_state(task)  # 终态必须落库，否则别处永远看到 running
+
+
+async def _watch_remote_cancel(task: TaskState, interval: float = 1.0) -> None:
+    """轮询 Redis 取消信号，命中则取消本地执行。
+
+    为什么是轮询而不是订阅（pub/sub）：取消是低频操作，轮询实现简单且不需要
+    维护订阅连接的生命周期（订阅断了会静默失效，反而更难排查）。间隔 1 秒对
+    "用户点取消"这个交互来说足够及时。
+    """
+    try:
+        while True:
+            await asyncio.sleep(interval)
+            if task.cancel_requested:
+                return
+            if task_store.is_cancel_requested(task.id):
+                task.cancel_requested = True
+                task_store.publish_state(task)
+                if task.handle is not None:
+                    task.handle.cancel()
+                return
+    except asyncio.CancelledError:
+        return
 
 
 def cancel(task_id: str) -> bool:
+    """取消任务。本地有则直接取消；本地没有（别的 worker 创建的）则写 Redis 信号。
+
+    返回值语义：True = 取消请求已生效（本地已取消，或信号已投递）。
+    """
     task = _TASKS.get(task_id)
-    if task is None or task.status in ("done", "failed", "cancelled"):
+    if task is not None:
+        if task.status in ("done", "failed", "cancelled"):
+            return False
+        task.cancel_requested = True
+        if task.handle is not None:
+            task.handle.cancel()
+        task_store.publish_state(task)
+        return True
+
+    # 本地没有 -> 可能是别的 worker 的任务：写跨进程取消信号
+    state = task_store.read_state(task_id)
+    if state is None:
+        return False  # 任务根本不存在（或已过期）
+    if state.get("status") in ("done", "failed", "cancelled"):
         return False
-    task.cancel_requested = True
-    if task.handle is not None:
-        task.handle.cancel()
-    return True
+    return task_store.request_cancel(task_id)
 
 
 async def wait(task_id: str, timeout: float = 120.0) -> dict[str, Any]:
-    """同步等待任务完成（测试与内部调用用）。"""
+    """同步等待任务完成（测试与内部调用用）。
+
+    跨进程场景下读 Redis 镜像 —— 但轮询间隔要比进程内更宽松（Redis 往返
+    比内存读贵得多），因此这里用 2 倍 poll interval。
+    """
     task = _TASKS.get(task_id)
-    if task is None:
-        raise KeyError(f"未知任务: {task_id}")
+    if task is not None:
+        deadline = time.time() + timeout
+        while task.status in ("pending", "running") and time.time() < deadline:
+            await asyncio.sleep(settings.TASK_POLL_INTERVAL)
+        return task.snapshot()
+
+    # 本地没有 -> 轮询 Redis 镜像
+    interval = max(0.3, settings.TASK_POLL_INTERVAL * 2)
     deadline = time.time() + timeout
-    while task.status in ("pending", "running") and time.time() < deadline:
-        await asyncio.sleep(settings.TASK_POLL_INTERVAL)
-    return task.snapshot()
+    while time.time() < deadline:
+        state = task_store.read_state(task_id)
+        if state is None:
+            raise KeyError(f"未知任务: {task_id}")
+        if state.get("status") in ("done", "failed", "cancelled"):
+            return _state_to_snapshot(state)
+        await asyncio.sleep(interval)
+    state = task_store.read_state(task_id)
+    if state is None:
+        raise KeyError(f"未知任务: {task_id}")
+    return _state_to_snapshot(state)
 
 
 async def events(task_id: str, from_index: int = 0) -> AsyncIterator[dict[str, Any]]:
-    """SSE 事件流：先补发历史事件，再增量推送，任务终止后自动收尾。"""
+    """SSE 事件流：先补发历史事件，再增量推送，任务终止后自动收尾。
+
+    两种数据源：
+      * 任务在本进程（owner）-> 直接读内存 deque，延迟最低；
+      * 任务在别的 worker -> 读 Redis 事件列表（镜像），按索引增量拉取。
+
+    owner 判定用 task_store 里记录的 instance_id —— 比"本地字典里有没有"
+    更准确（本地字典可能因 cleanup 清掉了已完成任务，但状态镜像还在）。
+    """
     task = _TASKS.get(task_id)
-    if task is None:
-        yield {"event": "error", "data": {"error": f"未知任务: {task_id}"}}
+    if task is not None:
+        async for evt in _events_local(task, from_index):
+            yield evt
         return
 
+    # 跨进程路径
+    state = task_store.read_state(task_id)
+    if state is None:
+        yield {"event": "error", "data": {"error": f"未知任务: {task_id}"}}
+        return
+    async for evt in _events_remote(task_id, state, from_index):
+        yield evt
+
+
+async def _events_local(task: TaskState, from_index: int) -> AsyncIterator[dict[str, Any]]:
+    """owner 路径：内存事件流（原实现，语义不变）。"""
     idx = from_index
     while True:
         while idx < len(task.events):
@@ -213,6 +358,39 @@ async def events(task_id: str, from_index: int = 0) -> AsyncIterator[dict[str, A
             yield {"event": "closed", "data": task.snapshot()}
             return
         await asyncio.sleep(settings.TASK_POLL_INTERVAL)
+
+
+async def _events_remote(
+    task_id: str, initial_state: dict[str, Any], from_index: int
+) -> AsyncIterator[dict[str, Any]]:
+    """非 owner 路径：轮询 Redis 事件列表。
+
+    终止判定用**Redis 里的状态**而不是本地字典 —— 任务可能已结束但事件还在
+    写入（终态事件与状态更新之间有一个极短窗口），因此要"事件读完 + 状态终态"
+    两个条件同时满足才收尾。
+    """
+    idx = from_index
+    # 轮询间隔比进程内宽松：Redis 往返比内存读贵，且 SSE 场景下 0.5s 的
+    # 推送延迟用户无感（Agent 链路本身要跑数秒）。
+    interval = max(0.3, settings.TASK_POLL_INTERVAL * 2)
+    while True:
+        batch = task_store.read_events(task_id, idx)
+        if batch:
+            idx += len(batch)
+            for evt in batch:
+                yield evt
+            continue
+
+        state = task_store.read_state(task_id) or initial_state
+        status = str(state.get("status", "running"))
+        if status in ("done", "failed", "cancelled"):
+            # 再拉一次，确保终态事件不丢
+            tail = task_store.read_events(task_id, idx)
+            for evt in tail:
+                yield evt
+            yield {"event": "closed", "data": _state_to_snapshot(state)}
+            return
+        await asyncio.sleep(interval)
 
 
 def sse_format(evt: dict[str, Any]) -> str:
@@ -251,4 +429,6 @@ def stats() -> dict[str, Any]:
         "by_status": by_status,
         "concurrency_limit": _concurrency_limit or settings.MAX_CONCURRENT_PIPELINES,
         "queued": by_status.get("pending", 0) + by_status.get("queued", 0),
+        # 跨进程能力说明：多 worker 下这是"任务能否被任意 worker 查到"的关键
+        "store": task_store.store_info(),
     }

@@ -14,7 +14,6 @@ from ..core.pipeline import practice_pipeline, run_agent
 from ..core.tasks import (
     cancel,
     events,
-    get_task,
     list_tasks,
     sse_format,
     submit,
@@ -22,6 +21,9 @@ from ..core.tasks import (
 )
 from ..core.tasks import (
     stats as task_stats,
+)
+from ..core.tasks import (
+    task_detail as task_detail_snapshot,
 )
 from ..deps import DbSession, ModelConfigDep, UserDep
 from ..services import (
@@ -289,25 +291,36 @@ task_router = APIRouter(prefix="/api/tasks", tags=["⑦ Agent 与任务"])
 
 @task_router.get("", response_model=dict)
 async def list_tasks_api(db: DbSession, user: UserDep):
-    """33 任务列表（内存态 + 持久化）。"""
+    """33 任务列表（运行态 + 持久化）。
+
+    运行态列表已合并 Redis 镜像：多 worker 部署下也能看到"别的 worker
+    创建的任务"，不再只有本进程的那几条。
+    """
     return {"runtime": list_tasks(user.id), "persisted": await list_persisted_tasks(db, user.id)}
 
 
 @task_router.get("/{task_id}", response_model=dict)
 async def task_detail(task_id: str, user: UserDep):
-    """34 任务详情（轮询用）。"""
-    task = get_task(task_id)
-    if task is None:
+    """34 任务详情（轮询用）。
+
+    必须走 task_detail() 而不是 get_task()：后者只查本进程字典，
+    多 worker 下轮询被负载均衡到别的 worker 会随机 404。
+    """
+    snapshot = task_detail_snapshot(task_id)
+    if snapshot is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "任务不存在")
-    return task.snapshot()
+    return snapshot
 
 
 @task_router.post("/{task_id}/cancel", response_model=dict)
 async def task_cancel(task_id: str, user: UserDep):
-    """35 中断任务：立刻停止后续 Agent 调用，不再产生 token 消耗。"""
+    """35 中断任务：立刻停止后续 Agent 调用，不再产生 token 消耗。
+
+    任务在别的 worker 上时，cancel() 会写跨进程取消信号，由 owner 侧的
+    轮询任务感知并取消本地句柄（asyncio 句柄无法跨进程传递）。
+    """
     ok = cancel(task_id)
-    task = get_task(task_id)
-    return {"ok": ok, "task": task.snapshot() if task else None}
+    return {"ok": ok, "task": task_detail_snapshot(task_id)}
 
 
 @task_router.post("/{task_id}/wait", response_model=dict)
