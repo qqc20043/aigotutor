@@ -333,6 +333,9 @@ class ReviewQueue(Base, TimestampMixin):
     lapses: Mapped[int] = mapped_column(Integer, default=0)
     due_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     last_review_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    # Anki leech 语义：顽固卡可"搁置"——移出每日队列（不再每天打击信心），
+    # 专项修复（AI 干预方案 + 手动重做）后手动恢复；标记掌握时自动恢复。
+    suspended: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 # ---------------------------------------------------------- 10 wrong_book
@@ -530,3 +533,21 @@ class InterviewReport(Base, TimestampMixin):
     scores: Mapped[str] = mapped_column(Text, default="{}")  # JSON: 五维 + total
     narrative: Mapped[str] = mapped_column(Text, default="")
     degraded: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+# ---------------------------------------------------- 22 practice_sets
+class PracticeSet(Base, TimestampMixin):
+    """自定义练习配方（Anki 筛选牌组的对应物）：保存条件，按需重新生成。
+
+    动态语义与 Anki 一致：配方存的是"条件"而不是快照 —— 每次生成按当前
+    到期/顽固/新题状态重抽；完成进度不在此表（提交记录已是事实源）。
+    """
+
+    __tablename__ = "practice_sets"
+    __table_args__ = (Index("ix_practice_sets_user", "user_id", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    name: Mapped[str] = mapped_column(String(120), default="")
+    # 配方：{size, include_review, include_leech, include_fresh, tags}
+    recipe: Mapped[str] = mapped_column(Text, default="{}")

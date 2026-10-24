@@ -570,7 +570,12 @@ async def upsert_review_item(
 
 
 async def get_review_queue(
-    db: AsyncSession, user_id: str, *, due_only: bool = False, limit: int = 50
+    db: AsyncSession,
+    user_id: str,
+    *,
+    due_only: bool = False,
+    limit: int = 50,
+    include_suspended: bool = False,
 ) -> list[dict[str, Any]]:
     """复习队列。
 
@@ -584,6 +589,9 @@ async def get_review_queue(
     now = _now()
     stmt = select(ReviewQueue, Problem).join(Problem, Problem.id == ReviewQueue.problem_id)
     stmt = stmt.where(ReviewQueue.user_id == user_id)
+    # Anki leech 语义：搁置的顽固卡移出每日队列（专项修复后再手动恢复）
+    if not include_suspended:
+        stmt = stmt.where(ReviewQueue.suspended == False)  # noqa: E712
     if due_only:
         stmt = stmt.where(ReviewQueue.due_at <= now)
     # 逾期最久的排最前
@@ -607,6 +615,7 @@ async def get_review_queue(
                 "due_at": due,
                 "is_due": fsrs.is_due(due, now),
                 "overdue_days": round(overdue, 2),
+                "suspended": bool(item.suspended),
             }
         )
     return out

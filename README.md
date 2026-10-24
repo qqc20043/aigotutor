@@ -26,7 +26,7 @@ python run.py                     # http://127.0.0.1:8000
 
 ```bash
 # 5. 验证
-python -m pytest                      # 365 项单元 + 集成测试
+python -m pytest                      # 369 项单元 + 集成测试
 python -m pytest --cov=app            # 覆盖率（CI 阈值 75%）
 python -m ruff check .                # 代码质量（0 告警）
 python scripts/judge_selftest.py      # 判题沙箱自测（本机可用语言全过，CI 全语言 14/14）
@@ -307,15 +307,18 @@ START → judge → mastery ─┬─(有候选)→ recommend ─┬─(有标�
 
 ### 智能练习：顽固错题雷达 + 混排练习（学习科学落地）
 
-对标 Anki 的 leech 机制与 Custom Study / 交错练习（interleaving）：
-  * **顽固错题雷达**——FSRS 遗忘次数或错题本连错达阈值自动标记，
-    每条带"为什么是顽固卡"的理由；AI 干预方案输出诊断/子问题拆解/
+对标 Anki 的 leech 机制与 Custom Study / 交错练习（interleaving），对齐到机制层：
+  * **顽固错题雷达 + 搁置语义**——FSRS 遗忘/错题本连错达阈值自动标记；
+    可**搁置**（Anki Suspend）：移出每日队列与混排、雷达仍可见可恢复，
+    标记掌握时自动恢复（完整闭环）；AI 干预方案输出诊断/子问题拆解/
     先修建议/下一步（事实全部来自规则层，LLM 只做诊断表达，可降级）；
-  * **混排练习生成器**——FSRS 到期 + 顽固错题 + 薄弱知识点新题三路采题，
-    按知识点轮转交错（相邻不同知识点，"合意困难"），每题带来源与
-    入选理由。零新表（识别是查询、混排是合成、干预按需生成）。
-    `GET /api/practice/leech`、`POST /api/practice/interleaved`、
-    `POST /api/practice/leech/{id}/plan`；入口在复习队列与错题本页。
+  * **混排练习生成器 + 练习配方**——FSRS 到期 + 顽固错题 + 薄弱知识点
+    新题三路采题，按知识点轮转交错（相邻不同知识点，"合意困难"），
+    每题带来源与入选理由；**配方**（Anki 筛选牌组）保存条件而非快照
+    （tags 筛选 = Custom Study 自定义条件），按当前状态动态重抽。
+    `GET /api/practice/leech`、`POST .../suspend`、`POST /interleaved`
+    （支持 tags）、`POST /leech/{id}/plan`、`/recipes` CRUD +
+    `/recipes/{id}/generate`；入口在复习队列与错题本页。
 
 ### MCP Server：AI 宿主可调用的学习服务
 

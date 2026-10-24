@@ -1,7 +1,8 @@
-"""⑬ 智能练习：顽固错题雷达 + 混排练习 + AI 干预方案。
+"""⑬ 智能练习：顽固错题雷达 + 混排练习 + AI 干预方案 + 练习配方。
 
 设计见 core/practice.py 模块注释（Anki leech / Custom Study / interleaving
-的对标映射）。全部只读 + 按需生成，零新表。
+的对标映射）。搁置/恢复是 review_queue 上的写操作；配方
+（practice_sets，Anki 筛选牌组的对应物）保存条件、按需重新生成。
 """
 
 from __future__ import annotations
@@ -21,6 +22,22 @@ class InterleavedIn(BaseModel):
     include_review: bool = True
     include_leech: bool = True
     include_fresh: bool = True
+    tags: list[str] = Field(
+        default_factory=list, max_length=8, description="知识点筛选（Custom Study 条件）"
+    )
+
+
+class SuspendIn(BaseModel):
+    suspended: bool = True
+
+
+class RecipeIn(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    size: int = Field(default=6, ge=1, le=20)
+    include_review: bool = True
+    include_leech: bool = True
+    include_fresh: bool = True
+    tags: list[str] = Field(default_factory=list, max_length=8)
 
 
 @router.get("/leech")
@@ -39,7 +56,120 @@ async def interleaved_set(body: InterleavedIn, db: DbSession, user: UserDep):
         include_review=body.include_review,
         include_leech=body.include_leech,
         include_fresh=body.include_fresh,
+        tags_filter=body.tags or None,
     )
+
+
+# --------------------------------------------------------------- 搁置/恢复
+@router.post("/leech/{problem_id}/suspend")
+async def suspend_leech(problem_id: str, body: SuspendIn, db: DbSession, user: UserDep):
+    """搁置/恢复顽固错题（Anki leech 语义）。
+
+    搁置：移出每日队列与混排（雷达仍可见），适合"先修复别的，回头再来"；
+    恢复：回到正常调度。标记掌握时也会自动恢复（见 mastery 接口）。
+    """
+    from sqlalchemy import update
+
+    from ..models import ReviewQueue
+
+    result = await db.execute(
+        update(ReviewQueue)
+        .where(ReviewQueue.user_id == user.id, ReviewQueue.problem_id == problem_id)
+        .values(suspended=body.suspended)
+    )
+    if result.rowcount == 0:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "该题没有复习记录")
+    return {"ok": True, "problem_id": problem_id, "suspended": body.suspended}
+
+
+# --------------------------------------------------------------- 练习配方
+def _recipe_out(row) -> dict:
+    import json as _json
+
+    return {
+        "id": row.id,
+        "name": row.name,
+        "recipe": _json.loads(row.recipe or "{}"),
+        "created_at": row.created_at.isoformat(),
+    }
+
+
+@router.get("/recipes", response_model=dict)
+async def list_recipes(db: DbSession, user: UserDep):
+    from sqlalchemy import select
+
+    from ..models import PracticeSet
+
+    rows = (
+        (
+            await db.execute(
+                select(PracticeSet)
+                .where(PracticeSet.user_id == user.id)
+                .order_by(PracticeSet.created_at.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return {"items": [_recipe_out(r) for r in rows]}
+
+
+@router.post("/recipes", status_code=status.HTTP_201_CREATED)
+async def create_recipe(body: RecipeIn, db: DbSession, user: UserDep):
+    """保存练习配方（Anki 筛选牌组）：存条件不存快照，生成时按当前状态重抽。"""
+    import json as _json
+
+    from ..models import PracticeSet
+
+    recipe = {
+        "size": body.size,
+        "include_review": body.include_review,
+        "include_leech": body.include_leech,
+        "include_fresh": body.include_fresh,
+        "tags": body.tags,
+    }
+    row = PracticeSet(
+        user_id=user.id, name=body.name, recipe=_json.dumps(recipe, ensure_ascii=False)
+    )
+    db.add(row)
+    await db.flush()
+    return _recipe_out(row)
+
+
+@router.delete("/recipes/{recipe_id}")
+async def delete_recipe(recipe_id: str, db: DbSession, user: UserDep):
+    from ..models import PracticeSet
+
+    row = await db.get(PracticeSet, recipe_id)
+    if row is None or row.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "配方不存在")
+    await db.delete(row)
+    await db.flush()
+    return {"ok": True}
+
+
+@router.post("/recipes/{recipe_id}/generate")
+async def generate_from_recipe(recipe_id: str, db: DbSession, user: UserDep):
+    """按配方生成一次混排练习（动态语义：用当前到期/顽固/新题状态重抽）。"""
+    import json as _json
+
+    from ..models import PracticeSet
+
+    row = await db.get(PracticeSet, recipe_id)
+    if row is None or row.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "配方不存在")
+    recipe = _json.loads(row.recipe or "{}")
+    out = await build_interleaved(
+        db,
+        user.id,
+        int(recipe.get("size", 6)),
+        include_review=bool(recipe.get("include_review", True)),
+        include_leech=bool(recipe.get("include_leech", True)),
+        include_fresh=bool(recipe.get("include_fresh", True)),
+        tags_filter=recipe.get("tags") or None,
+    )
+    out["recipe"] = {"id": row.id, "name": row.name, **recipe}
+    return out
 
 
 @router.post("/leech/{problem_id}/plan")

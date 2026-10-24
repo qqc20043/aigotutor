@@ -3,7 +3,7 @@ import { computed, onMounted, ref, shallowRef } from 'vue'
 import * as echarts from 'echarts'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { practiceApi, reviewApi, type PracticeItem } from '@/api'
+import { practiceApi, reviewApi, type PracticeItem, type PracticeRecipe } from '@/api'
 import type { ReviewItem, ReviewMarkResult } from '@/api/types'
 import { difficultyType, fmtRelative, retentionColor } from '@/utils/format'
 
@@ -147,6 +147,31 @@ const SOURCE_META: Record<string, { label: string; type: 'warning' | 'danger' | 
   fresh: { label: '新题', type: 'info' },
 }
 
+const recipes = ref<PracticeRecipe[]>([])
+const recipeLoading = ref(false)
+
+async function loadRecipes() {
+  try {
+    recipes.value = (await practiceApi.recipes()).items
+  } catch {
+    /* 配方加载失败不阻塞页面 */
+  }
+}
+
+async function runRecipe(r: PracticeRecipe) {
+  recipeLoading.value = true
+  try {
+    const out = await practiceApi.generateFrom(r.id)
+    mixItems.value = out.items
+    if (out.stats) mixStats.value = out.stats
+    ElMessage.success(`按配方「${r.name}」生成 ${out.items.length} 题`)
+  } catch {
+    ElMessage.error('按配方生成失败')
+  } finally {
+    recipeLoading.value = false
+  }
+}
+
 async function loadMix() {
   mixLoading.value = true
   try {
@@ -163,6 +188,7 @@ async function loadMix() {
 onMounted(() => {
   void load()
   void loadMix()
+  void loadRecipes()
 })
 </script>
 
@@ -176,6 +202,18 @@ onMounted(() => {
             {{ mixStats.size }} 题 · 交错 {{ mixStats.interleaved_pairs }} 对 · 相邻不同知识点
           </el-tag>
           <div class="flex-spacer" />
+          <el-dropdown v-if="recipes.length" @command="runRecipe">
+            <el-button size="small" :loading="recipeLoading">
+              我的配方 ({{ recipes.length }})
+            </el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item v-for="r in recipes" :key="r.id" :command="r">
+                  {{ r.name }}（{{ r.recipe.tags?.join('/') || '全部知识点' }}）
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
           <el-button size="small" :loading="mixLoading" @click="loadMix">重新生成</el-button>
         </div>
       </template>

@@ -70,6 +70,16 @@ async function loadLeech() {
   }
 }
 
+async function toggleSuspend(item: LeechItem) {
+  try {
+    await practiceApi.suspend(item.problem_id, !item.suspended)
+    item.suspended = !item.suspended
+    ElMessage.success(item.suspended ? '已搁置：移出每日队列，雷达仍可见' : '已恢复调度')
+  } catch {
+    ElMessage.error('操作失败')
+  }
+}
+
 async function genPlan(item: LeechItem) {
   planFor.value = item.problem_id
   plan.value = null
@@ -175,7 +185,13 @@ onMounted(() => {
             <el-tag size="small" type="danger" effect="plain">{{ row.weakest_mastery }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="140" fixed="right">
+        <el-table-column label="状态" width="80">
+          <template #default="{ row }">
+            <el-tag v-if="row.suspended" size="small" type="warning" effect="plain">已搁置</el-tag>
+            <el-tag v-else size="small" type="success" effect="plain">调度中</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="220" fixed="right">
           <template #default="{ row }">
             <el-button
               link
@@ -185,6 +201,14 @@ onMounted(() => {
               @click="genPlan(row)"
             >
               AI 干预方案
+            </el-button>
+            <el-button
+              link
+              :type="row.suspended ? 'success' : 'warning'"
+              size="small"
+              @click="toggleSuspend(row)"
+            >
+              {{ row.suspended ? '恢复调度' : '搁置' }}
             </el-button>
           </template>
         </el-table-column>

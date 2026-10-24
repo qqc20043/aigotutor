@@ -440,6 +440,7 @@ export interface LeechItem {
   wrong_count: number
   weakest_mastery: number
   is_leech: boolean
+  suspended: boolean
   reason: string
   urgency: number
 }
@@ -453,6 +454,13 @@ export interface PracticeItem {
   order: number
   primary_tag: string
   tags: string[]
+}
+
+export interface PracticeRecipe {
+  id: string
+  name: string
+  recipe: { size: number; include_review: boolean; include_leech: boolean; include_fresh: boolean; tags: string[] }
+  created_at: string
 }
 
 export const practiceApi = {
@@ -488,4 +496,33 @@ export const practiceApi = {
         degraded: boolean
       }>(`/practice/leech/${problemId}/plan`)
       .then((r) => r.data),
+
+  /** 搁置/恢复顽固错题（Anki leech：搁置卡移出每日队列，雷达仍可见） */
+  suspend: (problemId: string, suspended: boolean) =>
+    http.post<{ ok: boolean; suspended: boolean }>(`/practice/leech/${problemId}/suspend`, { suspended }).then((r) => r.data),
+
+  recipes: () => http.get<{ items: PracticeRecipe[] }>('/practice/recipes').then((r) => r.data),
+
+  createRecipe: (body: {
+    name: string
+    size: number
+    tags: string[]
+    include_review?: boolean
+    include_leech?: boolean
+    include_fresh?: boolean
+  }) => http.post<PracticeRecipe>('/practice/recipes', body).then((r) => r.data),
+
+  deleteRecipe: (id: string) => http.delete(`/practice/recipes/${id}`).then((r) => r.data),
+
+  /** 按配方生成（动态语义：按当前到期/顽固/新题状态重抽） */
+  generateFrom: (id: string) =>
+    http
+      .post<{
+        items: PracticeItem[]
+        stats: { size: number; interleaved_pairs: number; sources: Record<string, number> }
+        recipe?: { name: string }
+        note?: string
+      }>(`/practice/recipes/${id}/generate`)
+      .then((r) => r.data),
 }
+

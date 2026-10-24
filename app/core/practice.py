@@ -32,17 +32,25 @@ LEECH_WRONG_COUNT = 3
 
 
 # --------------------------------------------------------------- 顽固错题雷达
-async def find_leeches(db, user_id: str, *, limit: int = 20) -> dict[str, Any]:
+async def find_leeches(
+    db,
+    user_id: str,
+    *,
+    limit: int = 20,
+    tags_filter: list[str] | None = None,
+) -> dict[str, Any]:
     """识别顽固错题：lapses ≥ 3 且最弱掌握度 < 40，或错题本连错 ≥ 3 次。
 
     返回 items（按"顽固程度"排序：lapses 与掌握度缺口加权）+ 阈值说明
-    （前端可展示"为什么它们被标记"）。
+    （前端可展示"为什么它们被标记"）。items 带 suspended 状态（Anki
+    搁置语义：搁置卡移出每日队列，但仍在雷达可见、可恢复）。
+    tags_filter：只保留命中任一知识点的题（Custom Study 的自定义条件）。
     """
     queue_rows = (
         await db.execute(
             text(
                 "SELECT rq.problem_id, p.title, p.difficulty, rq.lapses, "
-                "rq.reps, rq.retrievability "
+                "rq.reps, rq.retrievability, rq.suspended "
                 "FROM review_queue rq JOIN problems p ON rq.problem_id = p.id "
                 "WHERE rq.user_id = :uid AND rq.lapses >= :lt "
                 "ORDER BY rq.lapses DESC, rq.due_at ASC LIMIT :lim"
@@ -65,7 +73,7 @@ async def find_leeches(db, user_id: str, *, limit: int = 20) -> dict[str, Any]:
 
     # 合并两路信号：同一题取更"顽固"的表述
     merged: dict[str, dict[str, Any]] = {}
-    for pid, title, difficulty, lapses, reps, retrievability in queue_rows:
+    for pid, title, difficulty, lapses, reps, retrievability, suspended in queue_rows:
         merged[pid] = {
             "problem_id": pid,
             "title": title,
@@ -74,6 +82,7 @@ async def find_leeches(db, user_id: str, *, limit: int = 20) -> dict[str, Any]:
             "reps": int(reps or 0),
             "retrievability": float(retrievability or 0.0),
             "wrong_count": 0,
+            "suspended": bool(suspended),
         }
     for pid, title, difficulty, wrong_count in wrong_rows:
         item = merged.setdefault(
@@ -86,6 +95,7 @@ async def find_leeches(db, user_id: str, *, limit: int = 20) -> dict[str, Any]:
                 "reps": 0,
                 "retrievability": None,
                 "wrong_count": 0,
+                "suspended": False,
             },
         )
         item["wrong_count"] = max(item["wrong_count"], int(wrong_count or 0))
@@ -106,6 +116,8 @@ async def find_leeches(db, user_id: str, *, limit: int = 20) -> dict[str, Any]:
         weakest = min((float(mastery.get(t, 50.0)) for t in tags), default=50.0)
         item["tags"] = tags
         item["weakest_mastery"] = round(weakest, 1)
+        if tags_filter and not (set(tags) & set(tags_filter)):
+            continue
         item["is_leech"] = bool(
             item["lapses"] >= LEECH_LAPSES_THRESHOLD or item["wrong_count"] >= LEECH_WRONG_COUNT
         )
@@ -142,12 +154,16 @@ async def build_interleaved(
     include_review: bool = True,
     include_leech: bool = True,
     include_fresh: bool = True,
+    tags_filter: list[str] | None = None,
 ) -> dict[str, Any]:
     """生成混排练习集：三路采题 -> 按知识点轮转交错 -> 可解释的顺序。
 
     交错算法（贪心轮转）：把候选按"主知识点"分桶，每轮从不同桶各取一题；
     相邻两题主知识点不同即满足交错语义。某桶耗尽时允许跳过 —— 宁可少
     交错也不硬凑。
+    tags_filter（Custom Study 自定义条件）：只保留命中任一知识点的候选。
+    搁置语义：review 来源由 get_review_queue 默认排除搁置卡 —— 被搁置的
+    顽固卡已移出每日队列，不再自动进混排。
     """
     from ..services import (
         get_problem_tags,
@@ -178,6 +194,8 @@ async def build_interleaved(
         for i in leech["items"]:
             if not i["is_leech"]:
                 continue
+            if i.get("suspended"):
+                continue  # 搁置的顽固卡已移出日常练习（雷达可见、手动恢复）
             if any(c["problem_id"] == i["problem_id"] for c in candidates):
                 continue
             candidates.append(
@@ -195,11 +213,15 @@ async def build_interleaved(
         rows, _total = await list_problems(db, offset=0, limit=30)
         mastery = await mastery_scores_map(db, user_id)
         have = {c["problem_id"] for c in candidates}
-        mastery = await mastery_scores_map(db, user_id)
+        # "新题"语义 = 没提交过的题：搁置卡与一切已有复习记录的题都不算新。
+        # 修复前 fresh 路只排除当前 candidates —— 搁置卡会从这条路漏回混排
+        # （测试实测抓到），已做过的题也会被当成"新题"重复推。
+        full_queue = await get_review_queue(db, user_id, include_suspended=True, limit=500)
+        seen = {i["problem_id"] for i in full_queue}
         tag_map_all = await get_problem_tags(db, [p.id for p in rows])
         fresh: list[tuple[float, Any]] = []
         for p in rows:
-            if p.id in have:
+            if p.id in have or p.id in seen:
                 continue
             tags = [t["name"] for t in tag_map_all.get(p.id, [])]
             weakest = min((float(mastery.get(t, 50.0)) for t in tags), default=50.0)
@@ -229,6 +251,13 @@ async def build_interleaved(
     for c in candidates:
         c.setdefault("tags", [t["name"] for t in tag_map.get(c["problem_id"], [])])
         c["primary_tag"] = c["tags"][0] if c["tags"] else "未标注"
+
+    # Custom Study 自定义条件：按知识点筛选（在交错前过滤，宁缺毋滥）
+    if tags_filter:
+        wanted = {t.strip() for t in tags_filter if t.strip()}
+        candidates = [c for c in candidates if set(c["tags"]) & wanted]
+        if not candidates:
+            return {"items": [], "note": f"筛选条件下没有可用候选（tags={sorted(wanted)}）"}
 
     buckets: dict[str, list[dict[str, Any]]] = {}
     for c in candidates:

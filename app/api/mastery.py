@@ -121,6 +121,17 @@ async def wrong_book_list(
 @wrong_router.post("/{problem_id}/mastered", response_model=dict)
 async def wrong_mastered(problem_id: str, db: DbSession, user: UserDep, mastered: bool = True):
     ok = await mark_wrong_mastered(db, user.id, problem_id, mastered)
+    if mastered:
+        # 标记掌握时自动恢复搁置的顽固卡（Anki 语义：修复完成后回到队列）
+        from sqlalchemy import update
+
+        from ..models import ReviewQueue
+
+        await db.execute(
+            update(ReviewQueue)
+            .where(ReviewQueue.user_id == user.id, ReviewQueue.problem_id == problem_id)
+            .values(suspended=False)
+        )
     return {"ok": ok, "problem_id": problem_id, "mastered": mastered}
 
 
