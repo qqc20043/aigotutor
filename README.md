@@ -26,7 +26,7 @@ python run.py                     # http://127.0.0.1:8000
 
 ```bash
 # 5. 验证
-python -m pytest                      # 335 项单元 + 集成测试
+python -m pytest                      # 365 项单元 + 集成测试
 python -m pytest --cov=app            # 覆盖率（CI 阈值 75%）
 python -m ruff check .                # 代码质量（0 告警）
 python scripts/judge_selftest.py      # 判题沙箱自测（本机可用语言全过，CI 全语言 14/14）
@@ -305,6 +305,18 @@ START → judge → mastery ─┬─(有候选)→ recommend ─┬─(有标�
 图只负责编排。图节点里另有一层 `try/except` 不是替代 Agent 降级，而是防止 Agent 层意外抛出
 把整张图打断（双保险）。
 
+### 智能练习：顽固错题雷达 + 混排练习（学习科学落地）
+
+对标 Anki 的 leech 机制与 Custom Study / 交错练习（interleaving）：
+  * **顽固错题雷达**——FSRS 遗忘次数或错题本连错达阈值自动标记，
+    每条带"为什么是顽固卡"的理由；AI 干预方案输出诊断/子问题拆解/
+    先修建议/下一步（事实全部来自规则层，LLM 只做诊断表达，可降级）；
+  * **混排练习生成器**——FSRS 到期 + 顽固错题 + 薄弱知识点新题三路采题，
+    按知识点轮转交错（相邻不同知识点，"合意困难"），每题带来源与
+    入选理由。零新表（识别是查询、混排是合成、干预按需生成）。
+    `GET /api/practice/leech`、`POST /api/practice/interleaved`、
+    `POST /api/practice/leech/{id}/plan`；入口在复习队列与错题本页。
+
 ### MCP Server：AI 宿主可调用的学习服务
 
 `python -m app.mcp_server` 把教练能力暴露为 11 个 MCP 工具（stdio 本地宿主）：
@@ -370,6 +382,7 @@ START → judge → mastery ─┬─(有候选)→ recommend ─┬─(有标�
 | **多 Agent 统一基于 LangGraph 编排** | `core/graph.py`（StateGraph + 条件边 + reducer 状态合并） | `test_graph_conditional_*`、`test_graph_state_reducer_accumulates_all_nodes` |
 | **Redis**（限流/缓存/分布式锁） | `core/redis_client.py`、`middleware.py`、`core/cache.py`、`core/lock.py` | `test_rate_limiter_falls_back_to_local`、`test_lock_falls_back_to_local` |
 | 长链路后台任务 + 轮询 + 流式 + 中断 | `core/tasks.py`、`api/agent.py` | `test_pipeline_async_task_and_sse`、`test_pipeline_task_cancel` |
+| **智能练习：顽固错题雷达（leech）+ 混排生成（interleaving）** | `core/practice.py`（阈值识别 + 三路采题 + 知识点轮转交错 + AI 干预方案），零新表 | `tests/test_practice.py`（阈值/交错语义/容量/降级链/API 契约） |
 | **轻量 RAG 检索层：同型题召回（举一反三）** | `core/similar.py`（FTS5 trigram + 标签双路召回 + 混合排序 + 可解释理由），零向量库依赖 | `tests/test_similar.py`（5 项：召回/排序/重建/API 契约） |
 | **多轮对话式辅导：上下文治理 + 强度升降档** | `core/chat.py` + `api/chat.py` + `ChatSession/ChatMessage`（19 表）：token 预算裁剪、规则降级、SSE | `tests/test_chat.py`（8 项：治理/属主/流式/上下文预算） |
 | **Agent 行为评估：改动有回归防线，不是"感觉变好了"** | `app/evals/`（11 场景 golden set + 规则断言 + Kendall tau 排序保真度）、`scripts/eval_agents.py` | mock 下全绿进 CI（`tests/test_evals.py`）；真模型抽检出 Markdown 报告，详见 `docs/2026-10-24-Agent行为评估与真模型全链路验证.md` |

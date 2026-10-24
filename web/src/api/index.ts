@@ -429,3 +429,63 @@ export const interviewApi = {
   report: (id: string) =>
     http.get<{ report: InterviewReportOut | null; session: InterviewSessionOut }>(`/interview/${id}/report`).then((r) => r.data),
 }
+
+// ------------------------------------------------------------ ⑬ 智能练习
+export interface LeechItem {
+  problem_id: string
+  title: string
+  difficulty: string
+  tags: string[]
+  lapses: number
+  wrong_count: number
+  weakest_mastery: number
+  is_leech: boolean
+  reason: string
+  urgency: number
+}
+
+export interface PracticeItem {
+  problem_id: string
+  title: string
+  difficulty: string
+  source: 'review' | 'leech' | 'fresh'
+  reason: string
+  order: number
+  primary_tag: string
+  tags: string[]
+}
+
+export const practiceApi = {
+  leech: (limit = 20) =>
+    http
+      .get<{ items: LeechItem[]; thresholds: Record<string, any>; note?: string }>(
+        '/practice/leech',
+        { params: { limit } },
+      )
+      .then((r) => r.data),
+
+  interleaved: (body: {
+    size?: number
+    include_review?: boolean
+    include_leech?: boolean
+    include_fresh?: boolean
+  }) =>
+    http
+      .post<{
+        items: PracticeItem[]
+        stats: { size: number; interleaved_pairs: number; sources: Record<string, number> }
+        note?: string
+      }>('/practice/interleaved', body)
+      .then((r) => r.data),
+
+  plan: (problemId: string) =>
+    http
+      .post<{
+        diagnosis: string
+        sub_problems: string[]
+        prerequisite_advice: string
+        next_action: string
+        degraded: boolean
+      }>(`/practice/leech/${problemId}/plan`)
+      .then((r) => r.data),
+}

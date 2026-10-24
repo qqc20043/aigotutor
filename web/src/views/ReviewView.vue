@@ -3,7 +3,7 @@ import { computed, onMounted, ref, shallowRef } from 'vue'
 import * as echarts from 'echarts'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { reviewApi } from '@/api'
+import { practiceApi, reviewApi, type PracticeItem } from '@/api'
 import type { ReviewItem, ReviewMarkResult } from '@/api/types'
 import { difficultyType, fmtRelative, retentionColor } from '@/utils/format'
 
@@ -137,13 +137,72 @@ function goPractice(problemId: string) {
   void router.push(`/problems/${problemId}`)
 }
 
+// ---- 今日混排（智能练习）：三路采题 + 相邻不同知识点 ----
+const mixLoading = ref(false)
+const mixItems = ref<PracticeItem[]>([])
+const mixStats = ref<{ size: number; interleaved_pairs: number; sources: Record<string, number> } | null>(null)
+const SOURCE_META: Record<string, { label: string; type: 'warning' | 'danger' | 'info' }> = {
+  review: { label: 'FSRS 到期', type: 'warning' },
+  leech: { label: '顽固错题', type: 'danger' },
+  fresh: { label: '新题', type: 'info' },
+}
+
+async function loadMix() {
+  mixLoading.value = true
+  try {
+    const out = await practiceApi.interleaved({ size: 6 })
+    mixItems.value = out.items
+    mixStats.value = out.stats
+  } catch {
+    ElMessage.error('生成混排练习失败')
+  } finally {
+    mixLoading.value = false
+  }
+}
+
 onMounted(() => {
   void load()
+  void loadMix()
 })
 </script>
 
 <template>
   <div v-loading="loading">
+    <el-card class="page-card" shadow="never" style="margin-bottom: 14px">
+      <template #header>
+        <div style="display: flex; align-items: center; gap: 10px">
+          <span>今日混排 · 智能练习</span>
+          <el-tag v-if="mixStats" size="small" effect="plain" type="info">
+            {{ mixStats.size }} 题 · 交错 {{ mixStats.interleaved_pairs }} 对 · 相邻不同知识点
+          </el-tag>
+          <div class="flex-spacer" />
+          <el-button size="small" :loading="mixLoading" @click="loadMix">重新生成</el-button>
+        </div>
+      </template>
+      <el-alert
+        type="info"
+        :closable="false"
+        style="margin-bottom: 12px"
+        title="来源：FSRS 到期复习 + 顽固错题专项 + 薄弱知识点新题，按知识点交错排列（混排比集中刷同类题留存更好）"
+      />
+      <div class="mix-list">
+        <div
+          v-for="item in mixItems"
+          :key="item.problem_id"
+          class="mix-item"
+          @click="router.push(`/problems/${item.problem_id}`)"
+        >
+          <span class="mix-order">{{ item.order }}</span>
+          <el-tag size="small" :type="SOURCE_META[item.source]?.type || 'info'" effect="plain">
+            {{ SOURCE_META[item.source]?.label || item.source }}
+          </el-tag>
+          <span class="mix-title">{{ item.title }}</span>
+          <span class="mix-reason">{{ item.reason }}</span>
+        </div>
+        <el-empty v-if="!mixItems.length && !mixLoading" description="暂无可练习的题" :image-size="60" />
+      </div>
+    </el-card>
+
     <el-card class="page-card" shadow="never">
       <div class="toolbar" style="margin-bottom: 0">
         <el-statistic title="待复习总数" :value="dueCount" style="margin-right: 28px" />
@@ -364,5 +423,41 @@ onMounted(() => {
   display: flex;
   gap: 4px;
   flex-wrap: wrap;
+}
+</style>
+
+<style scoped>
+.mix-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mix-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 6px;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+.mix-item:hover {
+  border-color: var(--el-color-primary-light-5);
+}
+.mix-order {
+  font-weight: 700;
+  width: 20px;
+  text-align: center;
+}
+.mix-title {
+  font-weight: 500;
+}
+.mix-reason {
+  font-size: 12px;
+  color: #909399;
+  margin-left: auto;
+}
+.flex-spacer {
+  flex: 1;
 }
 </style>

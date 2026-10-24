@@ -25,6 +25,7 @@ from .api import (
     interview,
     mastery,
     operations,
+    practice,
     problems,
     recommend,
     review,
@@ -162,6 +163,7 @@ for router in (
     operations.notif_router,
     chat.router,
     interview.router,
+    practice.router,
     admin.router,
 ):
     app.include_router(router)

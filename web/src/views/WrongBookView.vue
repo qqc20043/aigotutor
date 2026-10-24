@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { masteryApi } from '@/api'
+import { masteryApi, practiceApi, type LeechItem } from '@/api'
 import type { ErrorCluster, WrongBookItem } from '@/api/types'
 import { difficultyType, fmtRelative, verdictText, verdictType } from '@/utils/format'
 
@@ -52,7 +52,39 @@ function goPractice(problemId: string) {
   void router.push(`/problems/${problemId}`)
 }
 
-onMounted(load)
+// ---- 顽固错题雷达（Anki leech 工作流的 AI 化）----
+const leechLoading = ref(false)
+const leeches = ref<LeechItem[]>([])
+const leechThresholds = ref<Record<string, any> | null>(null)
+const planFor = ref<string>('')
+const plan = ref<{ diagnosis: string; sub_problems: string[]; prerequisite_advice: string; next_action: string; degraded: boolean } | null>(null)
+
+async function loadLeech() {
+  leechLoading.value = true
+  try {
+    const out = await practiceApi.leech()
+    leeches.value = out.items.filter((i) => i.is_leech)
+    leechThresholds.value = out.thresholds
+  } finally {
+    leechLoading.value = false
+  }
+}
+
+async function genPlan(item: LeechItem) {
+  planFor.value = item.problem_id
+  plan.value = null
+  try {
+    plan.value = await practiceApi.plan(item.problem_id)
+  } catch {
+    ElMessage.error('生成干预方案失败')
+    planFor.value = ''
+  }
+}
+
+onMounted(() => {
+  void load()
+  void loadLeech()
+})
 </script>
 
 <template>
@@ -107,6 +139,76 @@ onMounted(load)
         </el-col>
       </el-row>
       <div v-else class="empty-hint">暂无聚类结果，点击"重新聚类"生成</div>
+    </el-card>
+
+    <!-- 顽固错题雷达 -->
+    <el-card class="page-card" shadow="never">
+      <template #header>
+        <div style="display: flex; align-items: center; gap: 10px">
+          <span>顽固错题雷达</span>
+          <el-tag v-if="leechThresholds" size="small" effect="plain" type="danger">
+            阈值：遗忘 ≥{{ leechThresholds.lapses }} 次或连错 ≥{{ leechThresholds.wrong_count }} 次
+          </el-tag>
+          <div class="flex-spacer" />
+          <el-button size="small" :loading="leechLoading" @click="loadLeech">刷新</el-button>
+        </div>
+      </template>
+      <el-alert
+        type="warning"
+        :closable="false"
+        style="margin-bottom: 12px"
+        title="反复失败的题继续同强度重做收益有限 —— 先看 AI 干预方案（诊断为什么卡、拆子问题、给先修建议），再按方案回来重做"
+      />
+      <el-table v-if="leeches.length" :data="leeches" size="small">
+        <el-table-column label="题目" min-width="160">
+          <template #default="{ row }">
+            <span class="title-link" @click="goPractice(row.problem_id)">{{ row.title }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="顽固程度" min-width="200">
+          <template #default="{ row }">
+            <span class="stat-label">{{ row.reason }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="最弱掌握度" width="100">
+          <template #default="{ row }">
+            <el-tag size="small" type="danger" effect="plain">{{ row.weakest_mastery }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="140" fixed="right">
+          <template #default="{ row }">
+            <el-button
+              link
+              type="primary"
+              size="small"
+              :loading="planFor === row.problem_id"
+              @click="genPlan(row)"
+            >
+              AI 干预方案
+            </el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <div v-else class="empty-hint">当前没有顽固错题 —— 保持节奏</div>
+
+      <el-card v-if="plan" shadow="never" style="margin-top: 12px">
+        <template #header>
+          <div style="display: flex; align-items: center; gap: 8px">
+            <span>干预方案</span>
+            <el-tag v-if="plan.degraded" size="small" effect="plain" type="info">规则模板</el-tag>
+          </div>
+        </template>
+        <el-descriptions :column="1" border size="small">
+          <el-descriptions-item label="诊断">{{ plan.diagnosis }}</el-descriptions-item>
+          <el-descriptions-item label="子问题拆解">
+            <ol style="margin: 0; padding-left: 18px">
+              <li v-for="(sp, i) in plan.sub_problems" :key="i">{{ sp }}</li>
+            </ol>
+          </el-descriptions-item>
+          <el-descriptions-item label="先修建议">{{ plan.prerequisite_advice }}</el-descriptions-item>
+          <el-descriptions-item label="下一步">{{ plan.next_action }}</el-descriptions-item>
+        </el-descriptions>
+      </el-card>
     </el-card>
 
     <!-- 错题列表 -->
