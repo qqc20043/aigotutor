@@ -1,5 +1,6 @@
 import { createRouter, createWebHashHistory, type RouteRecordRaw } from 'vue-router'
 import { getToken } from '@/api/http'
+import { useUserStore } from '@/stores/user'
 
 const routes: RouteRecordRaw[] = [
   {
@@ -89,7 +90,7 @@ const routes: RouteRecordRaw[] = [
         path: 'admin',
         name: 'admin',
         component: () => import('@/views/AdminView.vue'),
-        meta: { title: '管理后台', icon: 'Setting' },
+        meta: { title: '管理后台', icon: 'Setting', requiresAdmin: true },
       },
       {
         path: 'settings',
@@ -108,13 +109,20 @@ const router = createRouter({
   routes,
 })
 
-router.beforeEach((to) => {
+router.beforeEach(async (to) => {
   const loggedIn = Boolean(getToken())
   if (!to.meta.public && !loggedIn) {
     return { name: 'login', query: { redirect: to.fullPath } }
   }
   if (to.name === 'login' && loggedIn) {
     return { name: 'dashboard' }
+  }
+  // 管理后台：路由层直接拦截（后端 AdminDep 仍是最终防线，这里只是
+  // 不让普通用户进到"全 403 的空页面"——体验问题而非安全问题）
+  if (to.meta.requiresAdmin && loggedIn) {
+    const user = useUserStore()
+    if (!user.user) await user.fetchMe()
+    if (!user.isAdmin) return { name: 'dashboard' }
   }
   return true
 })
