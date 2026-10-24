@@ -111,6 +111,22 @@ def _looks_like_memory_error(stderr: str) -> bool:
 class SubprocessBackend(JudgeBackend):
     name = "subprocess"
 
+    # 提交给沙箱的代码运行在与本服务相同的机器/容器里（weak isolation 是
+    # 明示的设计边界）。若 judge 子进程继承完整环境，恶意代码一行
+    # `import os; print(os.environ)` 就能拿走 LLM API Key（真实金钱损失，
+    # 且公网部署时提交者是完全的陌生人）。因此 judge 子进程拿到的是
+    # 过滤后的环境：只剥离密钥类变量，保留运行所需（PATH/SYSTEMROOT 等），
+    # 非 judge 的进程（LLM 调用、种子脚本等）不受影响。
+    _SECRET_ENV_MARKERS = ("API_KEY", "SECRET", "PASSWORD", "TOKEN")
+
+    @classmethod
+    def _judge_env(cls) -> dict[str, str]:
+        return {
+            k: v
+            for k, v in os.environ.items()
+            if not any(marker in k.upper() for marker in cls._SECRET_ENV_MARKERS)
+        }
+
     def available_languages(self) -> list[str]:
         return [lang for lang in LANGUAGE_SPECS if language_available(lang)]
 
@@ -440,6 +456,7 @@ class SubprocessBackend(JudgeBackend):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(cwd),
+                env=self._judge_env(),
                 preexec_fn=_limits if IS_UNIX else None,
             )
         except (OSError, ValueError) as e:

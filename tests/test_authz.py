@@ -266,3 +266,33 @@ async def test_spa_html_not_cached(client):
     if "text/html" not in r.headers.get("content-type", ""):
         pytest.skip("前端未构建（CI test job），SPA 静态托管未启用")
     assert r.headers.get("cache-control") == "no-cache"
+
+
+# ==================================================== 判题子进程密钥剥离
+def test_judge_env_strips_secrets():
+    """judge 子进程环境不得携带密钥（weak isolation 下恶意代码可读 environ）。"""
+    import os
+
+    from app.judge.subprocess_backend import SubprocessBackend
+
+    seeded = {
+        "AIGOTUTOR_API_KEY": "sk-steal-me",
+        "AIGOTUTOR_SECRET": "super-secret",
+        "SOME_DB_PASSWORD": "p@ss",
+        "LLM_API_KEY": "sk-also-secret",
+        "PATH": os.environ.get("PATH", "/usr/bin"),
+        "LANG": "C.UTF-8",
+    }
+    original = dict(os.environ)
+    try:
+        os.environ.clear()
+        os.environ.update(seeded)
+        env = SubprocessBackend._judge_env()
+        assert "AIGOTUTOR_API_KEY" not in env
+        assert "AIGOTUTOR_SECRET" not in env
+        assert "SOME_DB_PASSWORD" not in env
+        assert "LLM_API_KEY" not in env
+        assert env.get("PATH"), "PATH 必须保留（子进程要能找到解释器）"
+    finally:
+        os.environ.clear()
+        os.environ.update(original)
