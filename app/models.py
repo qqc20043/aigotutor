@@ -491,6 +491,12 @@ class ChatSession(Base, TimestampMixin):
     # 由规则层算定与升降（用户明确要更多才升一档），模型无权改
     strength: Mapped[str] = mapped_column(String(24), default="")
     message_count: Mapped[int] = mapped_column(Integer, default=0)
+    # 会话类型：tutor=日常辅导（默认）；interview=模拟面试（考官人设 +
+    # 禁答案硬规则 + 计时 + 结束生成复盘报告）。两种类型共用 chat_messages。
+    kind: Mapped[str] = mapped_column(String(16), default="tutor")
+    time_limit_minutes: Mapped[int] = mapped_column(Integer, default=0)
+    # 面试状态：started_at/finished_at/hint_requests/submission_ids
+    meta: Mapped[str] = mapped_column(Text, default="{}")
 
 
 # ---------------------------------------------------- 19 chat_messages
@@ -506,4 +512,21 @@ class ChatMessage(Base, TimestampMixin):
     content: Mapped[str] = mapped_column(Text, default="")
     # assistant 消息携带：本次回复所处的强度档 / 是否规则降级
     strength: Mapped[str] = mapped_column(String(24), default="")
+    degraded: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+# ---------------------------------------------------- 20 interview_reports
+class InterviewReport(Base, TimestampMixin):
+    """模拟面试复盘报告：规则算客观分，LLM 只写叙事（可降级）。"""
+
+    __tablename__ = "interview_reports"
+    __table_args__ = (Index("ix_interview_reports_user", "user_id", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    session_id: Mapped[str] = mapped_column(ForeignKey("chat_sessions.id", ondelete="CASCADE"))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    problem_id: Mapped[str] = mapped_column(String(32), default="")
+    verdict: Mapped[str] = mapped_column(String(16), default="")  # 最终判题结果
+    scores: Mapped[str] = mapped_column(Text, default="{}")  # JSON: 五维 + total
+    narrative: Mapped[str] = mapped_column(Text, default="")
     degraded: Mapped[bool] = mapped_column(Boolean, default=False)

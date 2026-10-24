@@ -25,6 +25,8 @@ redis>=5.0
 psutil>=5.9
 # 用户 API Key 静态加密（Fernet）；缺失时明文落库并打警告，不会崩
 cryptography>=43.0
+# MCP Server（scripts/mcp 入口用）；Web 不依赖它，缺失不影响主服务
+mcp>=2.3
 # Windows 的 zoneinfo 没有系统时区库，打卡/报告的本地日界依赖它
 tzdata>=2024.1
 

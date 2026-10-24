@@ -358,3 +358,73 @@ export const chatApi = {
       )
       .then((r) => r.data),
 }
+
+// ------------------------------------------------------------ ⑫ 模拟面试
+export interface InterviewSessionOut {
+  id: string
+  problem_id: string
+  title: string
+  kind: string
+  time_limit_minutes: number
+  message_count: number
+  status: string
+  hint_requests: number
+  submission_ids: string[]
+  created_at: string
+}
+
+export interface InterviewReportOut {
+  verdict: string
+  scores: Record<string, any>
+  narrative: string
+  degraded: boolean
+  created_at: string
+}
+
+export const interviewApi = {
+  start: (problem_id: string, time_limit_minutes = 30) =>
+    http
+      .post<InterviewSessionOut>('/interview/start', { problem_id, time_limit_minutes })
+      .then((r) => r.data),
+
+  list: (limit = 20) =>
+    http.get<{ items: InterviewSessionOut[] }>('/interview', { params: { limit } }).then((r) => r.data),
+
+  detail: (id: string) =>
+    http
+      .get<{
+        session: InterviewSessionOut
+        messages: Array<{ role: string; content: string; strength: string; degraded: boolean; created_at: string }>
+      }>(`/interview/${id}`)
+      .then((r) => r.data),
+
+  message: (id: string, content: string, ask_hint = false) =>
+    http
+      .post<{
+        reply: string
+        degraded: boolean
+        strength: string
+        hint_requests: number
+        elapsed_seconds: number
+        time_limit_minutes: number
+      }>(`/interview/${id}/message`, { content, ask_hint })
+      .then((r) => r.data),
+
+  submit: (id: string, language: string, code: string) =>
+    http
+      .post<{ submission_id: string; verdict: string; passed: number; total: number; runtime_ms: number }>(
+        `/interview/${id}/submit`,
+        { language, code },
+      )
+      .then((r) => r.data),
+
+  finish: (id: string) =>
+    http
+      .post<{ ok: boolean; already?: boolean; report_id?: string; scores?: Record<string, any>; narrative?: string; degraded?: boolean }>(
+        `/interview/${id}/finish`,
+      )
+      .then((r) => r.data),
+
+  report: (id: string) =>
+    http.get<{ report: InterviewReportOut | null; session: InterviewSessionOut }>(`/interview/${id}/report`).then((r) => r.data),
+}

@@ -305,6 +305,38 @@ START → judge → mastery ─┬─(有候选)→ recommend ─┬─(有标�
 图只负责编排。图节点里另有一层 `try/except` 不是替代 Agent 降级，而是防止 Agent 层意外抛出
 把整张图打断（双保险）。
 
+### MCP Server：AI 宿主可调用的学习服务
+
+`python -m app.mcp_server` 把教练能力暴露为 11 个 MCP 工具（stdio 本地宿主）：
+推荐下一题、渐进提示（强度治理同样生效）、同型题检索、复习队列、掌握度画像、
+路线图、题库检索、**沙箱真实判题**、错题聚类、FSRS 复习打分——与 Web 共享
+同一 service 层与 SQLite 库，行为口径一致。
+
+```jsonc
+// Claude Desktop / Cursor 配置（claude_desktop_config.json）
+{
+  "mcpServers": {
+    "aigotutor": {
+      "command": "python",
+      "args": ["-m", "app.mcp_server"],
+      "cwd": "<仓库路径>",
+      "env": { "AIGOTUTOR_MCP_USER": "demo" }
+    }
+  }
+}
+```
+
+配置后在宿主里直接问"我今天该刷什么题 / 给我这道题的提示"，AI 会调用工具返回
+带理由的结果。端到端自检：`python scripts/mcp_smoke.py`。
+
+### 模拟面试模式（单题限时技术面 + 复盘报告）
+
+选定题目与时限（默认 30 分钟）→ 考官对话考察（**只追问不给答案**，索要提示
+计入「提示依赖」）→ 随时提交代码真实判题 → 结束生成五维复盘报告
+（正确性/代码质量/提示依赖/时间效率/沟通质量）。**分数全部由规则层算定**
+（可复现可解释），LLM 只在分数已定的前提下写叙事点评（可降级为模板）。
+入口：侧边栏「模拟面试」。
+
 ### Agent 行为评估（改提示词的回归防线）
 
 `app/evals/` + `scripts/eval_agents.py`：11 个场景钉住 5 个核心 Agent 的对外承诺

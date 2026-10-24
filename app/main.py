@@ -22,6 +22,7 @@ from .api import (
     agent,
     chat,
     data,
+    interview,
     mastery,
     operations,
     problems,
@@ -160,6 +161,7 @@ for router in (
     operations.rank_router,
     operations.notif_router,
     chat.router,
+    interview.router,
     admin.router,
 ):
     app.include_router(router)
