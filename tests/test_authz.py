@@ -256,7 +256,13 @@ async def test_metrics_rejects_non_loopback_without_token(client, monkeypatch):
 # ==================================================== SPA 缓存策略
 async def test_spa_html_not_cached(client):
     """index.html 必须发 no-cache（重建 dist 后旧缓存会导致页面 chunk 404，
-    登录成功但路由跳转静默失败——2026-10-24 实测复现）。"""
+    登录成功但路由跳转静默失败——2026-10-24 实测复现）。
+
+    CI 的 test job 不构建前端（无 web/dist），此时根路径返回 JSON 指引
+    而非 HTML —— 该场景没有缓存问题，跳过而非失败。
+    """
     r = await client.get("/")
     assert r.status_code == 200
+    if "text/html" not in r.headers.get("content-type", ""):
+        pytest.skip("前端未构建（CI test job），SPA 静态托管未启用")
     assert r.headers.get("cache-control") == "no-cache"
