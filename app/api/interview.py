@@ -202,6 +202,10 @@ async def interview_message(
                     f"{sub.language}）"
                 )
         ctx.extra = "最近判题：" + "；".join(facts)
+    digest = meta.get("last_code_digest")
+    if digest:
+        prefix = ctx.extra + "\n\n" if ctx.extra else ""
+        ctx.extra = prefix + "候选人当前代码摘要：\n" + digest
 
     messages = interview_messages(ctx, body.content, s.strength)
     from ..core.chat import STRENGTH_ORDER, rule_reply
@@ -306,6 +310,10 @@ async def submit_code(
     )
     meta.setdefault("submission_ids", []).append(sub.id)
     meta["last_verdict"] = fields["verdict"]
+    # 代码摘要入 meta：考官下一轮对话能"看见"代码（追问可引用行号）
+    from ..core.interview import code_digest
+
+    meta["last_code_digest"] = code_digest(body.code, body.language)
     await _save_meta(db, s, meta)
     return {
         "submission_id": sub.id,

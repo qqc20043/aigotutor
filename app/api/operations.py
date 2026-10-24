@@ -241,7 +241,9 @@ async def checkin_status(db: DbSession, user: UserDep):
 
     stats = await compute_day_stats(db, row.id, row.timezone)
     streak = await compute_streak(db, row.id, row.timezone)
-    history = await checkin_history(db, row.id, days=60)
+    history = await checkin_history(
+        db, row.id, tz_name=row.timezone, days=60, daily_goal=row.daily_goal
+    )
     return {
         "today": stats,
         "daily_goal": row.daily_goal,

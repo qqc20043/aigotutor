@@ -320,3 +320,46 @@ async def test_export_includes_chats_and_reports(iv_user):
     assert "chats" in body and "interview_reports" in body
     assert any(c["kind"] == "interview" for c in body["chats"])
     assert body["interview_reports"], "报告必须被导出"
+
+
+# ==================================================== P0-2：考官看代码
+async def test_examiner_sees_code_digest(iv_user):
+    """submit 后考官上下文必须含代码摘要（追问可引用行号）。"""
+    from app.core.chat import CoachContext
+    from app.core.interview import interview_messages
+
+    client, token = iv_user
+    H = {"Authorization": f"Bearer {token}"}
+    pid = await _problem(client, token)
+    sid = (await client.post("/api/interview/start", json={"problem_id": pid}, headers=H)).json()[
+        "id"
+    ]
+
+    code = "seen = {}\nfor i, x in enumerate(nums):\n    if target - x in seen:\n        print(seen[target - x], i)\n        break\n    seen[x] = i\n"
+    r = await client.post(
+        f"/api/interview/{sid}/submit", json={"language": "python", "code": code}, headers=H
+    )
+    assert r.status_code == 200
+
+    # 下一轮对话的考官消息里能看到摘要（行号 + 结构统计）
+    detail = await client.post(
+        f"/api/interview/{sid}/message",
+        json={"content": "我写完了，帮我看看"},
+        headers=H,
+    )
+    assert detail.status_code == 200
+
+    from app.core.interview import code_digest
+
+    digest = code_digest(code, "python")
+    assert "L2:" in digest and "循环 1" in digest
+    msgs = interview_messages(
+        CoachContext(
+            problem={"title": "T", "statement": "S", "tags": [], "difficulty": ""},
+            extra=f"候选人当前代码摘要：\n{digest}",
+        ),
+        "下一轮",
+        "direction",
+    )
+    joined = "\n".join(m["content"] for m in msgs)
+    assert "L2:" in joined and "循环" in joined, "考官必须能看见代码事实"

@@ -315,6 +315,36 @@ export const adminApi = {
     http.delete<Record<string, any>>(`/admin/problems/${id}`, { params: { confirm: true } }).then((r) => r.data),
   cleanup: () => http.post<Record<string, any>>('/admin/cleanup').then((r) => r.data),
   agents: (days = 7) => http.get<Record<string, any>>('/admin/agents', { params: { days } }).then((r) => r.data),
+
+  /** 题目管理（对标 Hydro 内容工作台）：列表含健康信息 */
+  adminProblems: (params: { page?: number; size?: number; keyword?: string } = {}) =>
+    http
+      .get<{
+        total: number
+        items: Array<{
+          id: string
+          title: string
+          difficulty: string
+          difficulty_score: number
+          tags: string[]
+          case_count: number
+          submit_count: number
+          accepted_count: number
+          created_by: string
+          time_limit_ms: number
+          memory_limit_mb: number
+        }>
+      }>('/admin/problems', { params })
+      .then((r) => r.data),
+
+  /** 一站式建题：题面 + 用例一起提交，建完即可判题 */
+  adminCreateProblem: (body: Record<string, unknown>) =>
+    http
+      .post<{ id: string; title: string; cases_saved: number; judgeable: boolean }>('/admin/problems', body)
+      .then((r) => r.data),
+
+  adminPatchProblem: (id: string, body: Record<string, unknown>) =>
+    http.patch<{ ok: boolean; updated: string[] }>(`/admin/problems/${id}`, body).then((r) => r.data),
 }
 
 // ------------------------------------------------------------ ⑪ 对话式辅导
@@ -525,4 +555,5 @@ export const practiceApi = {
       }>(`/practice/recipes/${id}/generate`)
       .then((r) => r.data),
 }
+
 

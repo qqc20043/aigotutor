@@ -274,6 +274,37 @@ def hint_request_flag(reply_text: str) -> bool:
     return bool(_HINT_MARK.search(reply_text or ""))
 
 
+def code_digest(code: str, language: str) -> str:
+    """代码摘要（给考官的事实，非完整代码——控制上下文预算且避免考官照抄）。
+
+    口径可解释：语言、行数、关键结构统计（函数/循环/条件/常见容器），
+    外加最长 3 段带行号的代码节选——考官能引用"第 N 行"进行针对性追问。
+    """
+    code = (code or "").strip()
+    if not code:
+        return ""
+    lines = code.splitlines()
+    digest = [f"{language}，{len(lines)} 行"]
+    counts = {
+        "函数": len(re.findall(r"\bdef\b|\bfunction\b|\bfunc\b", code)),
+        "循环": len(re.findall(r"\bfor\b|\bwhile\b", code)),
+        "条件": len(re.findall(r"\bif\b|\belse\b|elif|\bswitch\b", code)),
+    }
+    digest.append("；".join(f"{k} {v}" for k, v in counts.items() if v))
+    if "dict" in code or "map<" in code or "HashMap" in code:
+        digest.append("用了哈希结构")
+    if "sort" in code:
+        digest.append("含排序")
+    # 最长的三段（按非空行密度选段），带行号便于考官引用
+    segments: list[str] = []
+    for idx, ln in enumerate(lines, 1):
+        if ln.strip() and len(ln.strip()) > 12:
+            segments.append(f"L{idx}: {ln.strip()[:90]}")
+    if segments:
+        digest.append("\n".join(segments[:3]))
+    return "\n".join(digest)
+
+
 def elapsed_seconds_of(meta: dict[str, Any]) -> float:
     started = float(meta.get("started_at") or 0.0)
     if started <= 0:

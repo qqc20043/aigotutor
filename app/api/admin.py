@@ -143,3 +143,152 @@ async def agents_stats(
 ):
     """Agent 运行统计（全局，不限当前用户）。"""
     return await agent_run_stats(db, user_id="", days=days)
+
+
+# ==================================================== 题目管理（对标 Hydro：管理员的内容工作台）
+class AdminProblemCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    statement: str = Field(min_length=1, max_length=20000)
+    input_desc: str = ""
+    output_desc: str = ""
+    constraints: str = ""
+    samples: list[dict[str, str]] = Field(default_factory=list, max_length=5)
+    tags: list[str] = Field(default_factory=list, max_length=6)
+    difficulty: str = "入门"
+    time_limit_ms: int = Field(default=1000, ge=100, le=30000)
+    memory_limit_mb: int = Field(default=256, ge=16, le=1024)
+    # 建题即配用例（管理台一站式；否则题进"缺用例"不健康清单）
+    testcases: list[dict[str, str]] = Field(default_factory=list, max_length=50)
+
+
+class AdminProblemPatch(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    statement: str | None = Field(default=None, min_length=1, max_length=20000)
+    input_desc: str | None = None
+    output_desc: str | None = None
+    constraints: str | None = None
+    difficulty: str | None = None
+    time_limit_ms: int | None = Field(default=None, ge=100, le=30000)
+    memory_limit_mb: int | None = Field(default=None, ge=16, le=1024)
+
+
+@router.get("/problems", response_model=dict)
+async def admin_list_problems(
+    db: DbSession,
+    admin: AdminDep,
+    page: PageDep,
+    keyword: str | None = None,
+):
+    """题目管理列表：分页 + 关键词 + 健康信息（用例数/提交数/创建者）。"""
+    from sqlalchemy import func, select
+
+    from ..models import Submission, TestCase
+    from ..services import get_problem_tags, list_problems
+
+    rows, total = await list_problems(db, keyword=keyword, offset=page.offset, limit=page.size)
+    ids = [p.id for p in rows]
+    tag_map = await get_problem_tags(db, ids) if ids else {}
+    case_counts = (
+        dict(
+            (
+                await db.execute(
+                    select(TestCase.problem_id, func.count())
+                    .where(TestCase.problem_id.in_(ids))
+                    .group_by(TestCase.problem_id)
+                )
+            ).all()
+        )
+        if ids
+        else {}
+    )
+    sub_counts = (
+        dict(
+            (
+                await db.execute(
+                    select(Submission.problem_id, func.count())
+                    .where(Submission.problem_id.in_(ids))
+                    .group_by(Submission.problem_id)
+                )
+            ).all()
+        )
+        if ids
+        else {}
+    )
+    return {
+        "total": total,
+        "items": [
+            {
+                "id": p.id,
+                "title": p.title,
+                "difficulty": p.difficulty,
+                "difficulty_score": p.difficulty_score,
+                "tags": [t["name"] for t in tag_map.get(p.id, [])],
+                "case_count": case_counts.get(p.id, 0),
+                "submit_count": sub_counts.get(p.id, 0),
+                "accepted_count": p.accepted_count,
+                "created_by": p.created_by,
+                "time_limit_ms": p.time_limit_ms,
+                "memory_limit_mb": p.memory_limit_mb,
+            }
+            for p in rows
+        ],
+    }
+
+
+@router.post("/problems", status_code=status.HTTP_201_CREATED)
+async def admin_create_problem(body: AdminProblemCreate, db: DbSession, admin: AdminDep):
+    """管理员建题（对标 Hydro 内容工作台）：题面 + 用例一站式，建完即可判题。"""
+
+    from ..services import create_problem
+
+    data = {
+        "title": body.title,
+        "statement": body.statement,
+        "input_desc": body.input_desc,
+        "output_desc": body.output_desc,
+        "constraints": body.constraints,
+        # create_problem 内部会 json.dumps(samples)——这里必须传 list，
+        # 传 dumps 过的串会双重序列化（测试实测抓到：详情页 loads 后还是 str）
+        "samples": body.samples,
+        "difficulty": body.difficulty,
+        "time_limit_ms": body.time_limit_ms,
+        "memory_limit_mb": body.memory_limit_mb,
+        "created_by": admin.id,
+    }
+    problem = await create_problem(db, data, tag_names=body.tags)
+    saved_cases = 0
+    if body.testcases:
+        from ..judge_service import add_testcase
+
+        for c in body.testcases:
+            await add_testcase(
+                db,
+                problem.id,
+                {
+                    "input": c.get("input", ""),
+                    "output": c.get("output", ""),
+                    "hidden": str(c.get("hidden", "true")).lower() == "true",
+                },
+            )
+            saved_cases += 1
+    return {
+        "id": problem.id,
+        "title": problem.title,
+        "cases_saved": saved_cases,
+        "judgeable": saved_cases > 0,
+    }
+
+
+@router.patch("/problems/{problem_id}", response_model=dict)
+async def admin_patch_problem(
+    problem_id: str, body: AdminProblemPatch, db: DbSession, admin: AdminDep
+):
+    """改题面/限制（管理员治理任意题，含他人创建与导入的题）。"""
+    problem = await get_problem(db, problem_id)
+    if problem is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "题目不存在")
+    updates = body.model_dump(exclude_none=True)
+    for k, v in updates.items():
+        setattr(problem, k, v)
+    await db.flush()
+    return {"ok": True, "problem_id": problem_id, "updated": list(updates)}

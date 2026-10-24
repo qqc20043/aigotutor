@@ -265,7 +265,9 @@ async def test_spa_html_not_cached(client):
     assert r.status_code == 200
     if "text/html" not in r.headers.get("content-type", ""):
         pytest.skip("前端未构建（CI test job），SPA 静态托管未启用")
-    assert r.headers.get("cache-control") == "no-store", "HTML 必须 no-store（第三次缓存事故后收紧）"
+    assert r.headers.get("cache-control") == "no-store", (
+        "HTML 必须 no-store（第三次缓存事故后收紧）"
+    )
 
 
 # ==================================================== 判题子进程密钥剥离

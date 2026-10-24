@@ -178,10 +178,22 @@ async def compute_streak(
 
 
 async def checkin_history(
-    db: AsyncSession, user_id: str, days: int = 30, now: datetime | None = None
+    db: AsyncSession,
+    user_id: str,
+    tz_name: str | None = None,
+    days: int = 30,
+    now: datetime | None = None,
+    daily_goal: int = 3,
 ) -> list[dict[str, Any]]:
-    """最近 N 天的打卡日历（含未打卡的空白日）。"""
+    """最近 N 天的打卡日历（含未打卡的空白日）。
+
+    "今天"这一行实时重算（终算语义）：打卡只是确认动作，当日 AC 数在
+    用户继续做题后必须继续变化——否则早上打卡的人晚上多做的题，第二天
+    看统计仍是旧值（实测缺陷）。历史日保持快照（当天已结束，事实冻结）。
+    """
     now = now or _now()
+    tz = user_timezone(tz_name)
+    today_str = now.astimezone(tz).date().isoformat()
     cutoff = (now - timedelta(days=days)).date().isoformat()
     stmt = (
         select(DailyCheckin)
@@ -189,16 +201,31 @@ async def checkin_history(
         .order_by(DailyCheckin.checkin_date.desc())
     )
     rows = list((await db.execute(stmt)).scalars().all())
-    return [
-        {
-            "date": r.checkin_date,
-            "ac_count": r.ac_count,
-            "submit_count": r.submit_count,
-            "goal_met": r.goal_met,
-            "note": r.note,
-        }
-        for r in rows
-    ]
+
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        if r.checkin_date == today_str:
+            live = await compute_day_stats(db, user_id, tz_name, now)
+            out.append(
+                {
+                    "date": r.checkin_date,
+                    "ac_count": live["ac_count"],
+                    "submit_count": live["submit_count"],
+                    "goal_met": live["ac_count"] >= max(1, daily_goal),
+                    "note": r.note,
+                }
+            )
+        else:
+            out.append(
+                {
+                    "date": r.checkin_date,
+                    "ac_count": r.ac_count,
+                    "submit_count": r.submit_count,
+                    "goal_met": r.goal_met,
+                    "note": r.note,
+                }
+            )
+    return out
 
 
 # ============================================================== 排行榜

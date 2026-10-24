@@ -26,7 +26,7 @@ python run.py                     # http://127.0.0.1:8000
 
 ```bash
 # 5. 验证
-python -m pytest                      # 369 项单元 + 集成测试
+python -m pytest                      # 376 项单元 + 集成测试
 python -m pytest --cov=app            # 覆盖率（CI 阈值 75%）
 python -m ruff check .                # 代码质量（0 告警）
 python scripts/judge_selftest.py      # 判题沙箱自测（本机可用语言全过，CI 全语言 14/14）
@@ -145,6 +145,12 @@ curl http://127.0.0.1:8000/api/stats/global   # JSON 快照
 - **9 类指标**：HTTP 请求/耗时/在途、Agent 调用/降级/token、判题分布、限流拒绝、运行时长
 - **路径归一**：`/api/problems/{id}` 而非真实 id，避免时序基数爆炸
 - 空指标也输出 HELP/TYPE —— 否则监控系统在数据产生前会报"未知指标"
+
+### 管理后台题目管理（对标 Hydro 内容工作台）
+
+管理员一站式建题：题面 + 标签 + 限制 + **测试用例一次提交**，建完即可真实判题
+（`POST /api/admin/problems`）；列表含健康信息（用例数/提交/AC/时限），支持
+关键词检索与分页、改题面、删题。学生视角立即可做——"出题到验收"闭环。
 
 ### 题面导入
 
