@@ -201,7 +201,10 @@ class SPAStaticFiles(StaticFiles):
     def file_response(self, full_path, stat_result, scope, status_code=200):
         resp = super().file_response(full_path, stat_result, scope, status_code=status_code)
         if str(full_path).endswith(".html"):
-            resp.headers["Cache-Control"] = "no-cache"
+            # no-store 是最终根治：第三次实测确认（2026-10-24，"管理后台打不开"）
+            # —— no-cache 仍允许启发式缓存的浏览器在"新鲜期内"不回源验证，
+            # 旧 HTML 引用的旧 chunk 404。HTML 体积 <1KB，no-store 的代价可忽略。
+            resp.headers["Cache-Control"] = "no-store"
         return resp
 
 
