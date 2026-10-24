@@ -23,6 +23,8 @@ langgraph>=0.2
 redis>=5.0
 # 判题内存采样与进程树回收；缺失时后端会退化为"仅超时"，不会崩
 psutil>=5.9
+# 用户 API Key 静态加密（Fernet）；缺失时明文落库并打警告，不会崩
+cryptography>=43.0
 # Windows 的 zoneinfo 没有系统时区库，打卡/报告的本地日界依赖它
 tzdata>=2024.1
 

@@ -335,11 +335,23 @@ async def test_judge_mode_caller_still_works(seeded_client):
     assert r.json()["submission"]["judged_by"] == "caller"
 
 
+async def _own_problem(seeded_client, title: str) -> str:
+    """建一道归当前用户（demo）所有的题（新建题默认没有用例）。
+
+    用例写权限按创建者判定后，测试不能再用 items[1] 这类"列表位置"取题
+    —— 其它测试新建的题会扰动顺序（实测踩到），且种子题不归 demo 创建。
+    """
+    r = await seeded_client.post(
+        "/api/problems",
+        json={"title": title, "statement": "for judge_mode tests", "tags": ["模拟"]},
+    )
+    assert r.status_code == 201, r.text
+    return r.json()["id"]
+
+
 async def test_judge_mode_auto_falls_back_without_cases(seeded_client):
     """auto 模式：该题没有用例时回退 caller，并说明原因。"""
-    r = await seeded_client.get("/api/problems")
-    pid = r.json()["items"][1]["id"]
-    await seeded_client.put(f"/api/problems/{pid}/testcases", json={"replace": True, "cases": []})
+    pid = await _own_problem(seeded_client, "auto回退-无用例")
     r = await seeded_client.post(
         "/api/submissions",
         json={
@@ -360,9 +372,7 @@ async def test_auto_fallback_attaches_reason(seeded_client):
     旧版判断写的是 `mode == "sandbox"`，而 mode 此时已被改写为 "caller"，
     条件恒假 -> 回退提示永不出现，用户会误以为 caller 的 verdict 是判题机结论。
     """
-    r = await seeded_client.get("/api/problems")
-    pid = r.json()["items"][1]["id"]
-    await seeded_client.put(f"/api/problems/{pid}/testcases", json={"replace": True, "cases": []})
+    pid = await _own_problem(seeded_client, "auto回退-带原因")
     r = await seeded_client.post(
         "/api/submissions",
         json={
@@ -538,8 +548,8 @@ async def test_dedupe_window_reuses_recent_submission(seeded_client):
 
 
 async def test_different_code_not_deduped(seeded_client):
-    r = await seeded_client.get("/api/problems")
-    pid = r.json()["items"][2]["id"]
+    """同题不同代码不去重（用自建题：共享库里 items[N] 的位置会被其它测试扰动）。"""
+    pid = await _own_problem(seeded_client, "去重-不同代码")
     base = {"problem_id": pid, "judge_mode": "caller", "verdict": "WA", "run_agents": False}
     a = await seeded_client.post("/api/submissions", json={**base, "code": "print(1)\n"})
     b = await seeded_client.post("/api/submissions", json={**base, "code": "print(2)\n"})

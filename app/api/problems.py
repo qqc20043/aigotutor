@@ -237,6 +237,7 @@ async def create_problem_api(
     """11/27 新建题目（可选两阶段难度自动标注）。"""
     data = body.model_dump()
     data["samples"] = body.samples
+    data["created_by"] = user.id  # 用例写权限按创建者判定（见 _ensure_can_edit_testcases）
     if body.auto_annotate:
         annotation = await annotate_problem(
             {
@@ -298,10 +299,9 @@ async def get_testcases(problem_id: str, db: DbSession, user: UserDep):
 
 @router.post("/{problem_id}/testcases", response_model=dict, status_code=status.HTTP_201_CREATED)
 async def add_testcase_api(problem_id: str, body: TestCaseIn, db: DbSession, user: UserDep):
-    """新增单个测试用例。"""
+    """新增单个测试用例（仅题目创建者或管理员）。"""
     problem = await get_problem(db, problem_id)
-    if problem is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "题目不存在")
+    _ensure_can_edit_testcases(problem, user)
     if not body.output.strip():
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "期望输出不能为空")
     case = await add_testcase(db, problem_id, body.model_dump())
@@ -310,10 +310,13 @@ async def add_testcase_api(problem_id: str, body: TestCaseIn, db: DbSession, use
 
 @router.put("/{problem_id}/testcases", response_model=dict)
 async def batch_testcases(problem_id: str, body: TestCaseBatchIn, db: DbSession, user: UserDep):
-    """批量设置测试用例（replace=true 时整批替换，导入场景最常用）。"""
+    """批量设置测试用例（replace=true 时整批替换，导入场景最常用）。
+
+    仅题目创建者或管理员：用例含隐藏期望输出，任何登录用户可改任意题
+    的用例等于能伪造判题结果（PoC 已复现）。
+    """
     problem = await get_problem(db, problem_id)
-    if problem is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "题目不存在")
+    _ensure_can_edit_testcases(problem, user)
     if not body.cases:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "用例列表不能为空")
     for c in body.cases:
@@ -340,11 +343,26 @@ async def _count(db: DbSession, problem_id: str) -> int:
 
 @router.delete("/{problem_id}/testcases/{case_id}", response_model=dict)
 async def delete_testcase_api(problem_id: str, case_id: str, db: DbSession, user: UserDep):
-    """删除指定测试用例。"""
+    """删除指定测试用例（仅题目创建者或管理员）。"""
+    problem = await get_problem(db, problem_id)
+    _ensure_can_edit_testcases(problem, user)
     ok = await delete_testcase(db, problem_id, case_id)
     if not ok:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "用例不存在")
     return {"ok": True, "deleted": case_id}
+
+
+def _ensure_can_edit_testcases(problem, user) -> None:
+    """用例写权限：题目创建者或管理员；否则 404（不泄露题目存在性）。
+
+    created_by 为空（种子/导入的题）只有管理员可改。非创建者返回 404 而
+    不是 403 —— 与"题目不存在"同响应，避免探测到他人私有题目。
+    """
+    if problem is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "题目不存在")
+    if user.is_admin or (problem.created_by and problem.created_by == user.id):
+        return
+    raise HTTPException(status.HTTP_404_NOT_FOUND, "题目不存在")
 
 
 testcase_router = APIRouter(prefix="/api/judge", tags=["② 题库"])

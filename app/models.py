@@ -156,6 +156,9 @@ class Problem(Base, TimestampMixin):
     constraints: Mapped[str] = mapped_column(Text, default="")
     source: Mapped[str] = mapped_column(String(32), default="local")  # local|luogu|cf
     source_id: Mapped[str] = mapped_column(String(64), default="")
+    # 创建者（空 = 导入/种子数据，仅管理员可改其用例）。此前任何登录用户
+    # 都能覆写任意题目的用例（含隐藏期望输出）—— 等于能伪造判题结果。
+    created_by: Mapped[str] = mapped_column(String(32), default="", index=True)
     difficulty: Mapped[str] = mapped_column(String(16), default="入门")
     difficulty_score: Mapped[float] = mapped_column(Float, default=0.0)  # 0-100 连续分
     difficulty_source: Mapped[str] = mapped_column(String(16), default="rule")  # rule|llm|human

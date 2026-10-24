@@ -29,6 +29,7 @@ from .models import (
     UserModelConfig,
     WrongBook,
 )
+from .security import encrypt_secret
 
 
 def _now() -> datetime:
@@ -84,7 +85,9 @@ async def upsert_model_config(
     cfg.provider = provider
     cfg.model = model
     cfg.base_url = base_url
-    cfg.api_key_ref = api_key_ref
+    # API Key 加密落库（见 security.encrypt_secret）；读路径统一 decrypt_secret，
+    # 存量明文行解密失败时原样返回，保持兼容。
+    cfg.api_key_ref = encrypt_secret(api_key_ref)
     cfg.temperature = temperature
     cfg.max_tokens = max_tokens
     cfg.enabled = enabled
@@ -165,6 +168,7 @@ async def create_problem(
         constraints=data.get("constraints", ""),
         source=data.get("source", "local"),
         source_id=data.get("source_id", ""),
+        created_by=str(data.get("created_by", "")),
         difficulty=data.get("difficulty", "入门"),
         difficulty_score=float(data.get("difficulty_score", 0.0)),
         difficulty_source=data.get("difficulty_source", "rule"),

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import ClassVar
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -56,6 +57,15 @@ class Settings:
     RATE_LIMIT_PER_MINUTE: int = int(_env("AIGOTUTOR_RATE_LIMIT_RPM", "120"))
     DEDUP_WINDOW_SECONDS: int = int(_env("AIGOTUTOR_DEDUP_WINDOW", "30"))
     MAX_REQUEST_BYTES: int = int(_env("AIGOTUTOR_MAX_REQUEST_BYTES", str(2 * 1024 * 1024)))
+    # CORS 白名单（逗号分隔）。默认空 = 不放行任何跨源请求：前端由后端同源
+    # 托管（/），开发模式走 vite 代理，都不需要 CORS。此前 allow_origins=["*"]
+    # + allow_credentials=True 会让 Starlette 回显任意 Origin，等效全放开。
+    CORS_ORIGINS: ClassVar[list[str]] = [
+        o for o in _env("AIGOTUTOR_CORS_ORIGINS", "").split(",") if o
+    ]
+    # /metrics 抓取令牌：设置后必须携带（Bearer 或 ?token=）才能抓取；
+    # 不设置时仅允许本机（loopback）访问 —— 运营数据不对外网暴露。
+    METRICS_TOKEN: str = _env("AIGOTUTOR_METRICS_TOKEN", "")
 
     # --- Redis（可选增强，留空则全部走进程内实现）---
     # 配置后：限流计数与结果缓存跨进程共享，支持 uvicorn --workers N

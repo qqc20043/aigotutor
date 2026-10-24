@@ -90,7 +90,10 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    # 白名单来自 AIGOTUTOR_CORS_ORIGINS，默认空 = 不放行任何跨源：
+    # 前端由后端同源托管（/），开发模式走 vite 代理。此前 "*" + credentials
+    # 的组合会让 Starlette 回显任意 Origin，等效对所有站点放开跨源。
+    allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -109,7 +112,22 @@ app.add_middleware(ObservabilityMiddleware)
 
 @app.get("/metrics", include_in_schema=False)
 async def prometheus_metrics(request: Request):
-    """Prometheus 抓取端点（不暴露在 OpenAPI 文档里，避免噪音）。"""
+    """Prometheus 抓取端点（不暴露在 OpenAPI 文档里，避免噪音）。
+
+    访问控制：设置 AIGOTUTOR_METRICS_TOKEN 后必须携带（Bearer 头或
+    ?token=）；未设置时仅允许 loopback 访问 —— 运营指标不对外网暴露。
+    """
+    token = settings.METRICS_TOKEN
+    if token:
+        supplied = request.query_params.get("token", "")
+        if not supplied:
+            auth = request.headers.get("authorization", "")
+            supplied = auth[7:] if auth.lower().startswith("bearer ") else ""
+        if supplied != token:
+            return JSONResponse(status_code=404, content={"detail": "Not Found"})
+    elif request.client is None or request.client.host not in ("127.0.0.1", "::1", "testclient"):
+        # 未配置 token 的部署（默认）：只允许本机抓取
+        return JSONResponse(status_code=404, content={"detail": "Not Found"})
     return await metrics_endpoint(request)
 
 

@@ -130,6 +130,9 @@ curl -N -X POST http://127.0.0.1:8000/api/agent/stream \
 | 角色 | `user` / `admin`；首个注册用户自动成为管理员 |
 | 限流 | 滑动窗口，按路由分组额度（登录 10/min、Agent 30/min、读接口 120/min） |
 | 请求体限制 | 默认 2MB，超限返回 413（在中间件层拦截，不解析后才拒绝） |
+| 资源属主校验 | 任务详情/取消/SSE/同步等待仅限属主；题库用例写操作仅限题目创建者或管理员（详见 `docs/2026-10-24-安全审查与越权修复.md`） |
+| 密钥静态加密 | 用户 API Key 以 Fernet 密文落库（SECRET_KEY 派生密钥），读取时解密、展示时脱敏；存量明文行兼容 |
+| CORS / metrics | 跨源白名单 `AIGOTUTOR_CORS_ORIGINS`（默认同源）；`/metrics` 需 `AIGOTUTOR_METRICS_TOKEN`，未设置时仅本机可抓 |
 
 ### 可观测性
 

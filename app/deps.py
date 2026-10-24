@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .config import settings
 from .db import get_db
 from .models import User, UserModelConfig
-from .security import decode_token
+from .security import decode_token, decrypt_secret
 
 DbSession = Annotated[AsyncSession, Depends(get_db)]
 
@@ -107,7 +107,9 @@ async def get_model_config(
         "provider": cfg.provider,
         "model": cfg.model,
         "base_url": cfg.base_url,
-        "api_key": cfg.api_key_ref,
+        # 落库为密文（services.upsert_model_config 已加密），使用时解密；
+        # 存量明文行 decrypt_secret 原样返回，兼容旧数据
+        "api_key": decrypt_secret(cfg.api_key_ref),
         "temperature": cfg.temperature,
         "max_tokens": cfg.max_tokens,
         "purpose": purpose,

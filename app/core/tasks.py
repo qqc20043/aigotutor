@@ -98,6 +98,24 @@ def task_detail(task_id: str) -> dict[str, Any] | None:
     return task_store.read_state(task_id)
 
 
+def task_owner(task_id: str) -> str | None:
+    """取任务属主 user_id（属主鉴权用；本地与 Redis 镜像同 task_detail 的顺序）。
+
+    返回 None 表示任务不存在（本地无、镜像也无）；返回空串表示存在但
+    拿不到属主（理论上不会发生，调用方按"非本人"处理）。
+
+    安全背景：任务详情/取消/SSE 此前只验证"登录"不验证"是谁的"，
+    任何用户拿别人的 task_id 就能读代码与 Agent 输出、取消别人的任务。
+    """
+    task = _TASKS.get(task_id)
+    if task is not None:
+        return task.user_id
+    state = task_store.read_state(task_id)
+    if state is not None:
+        return str(state.get("user_id") or "")
+    return None
+
+
 def list_tasks(user_id: str = "", limit: int = 50) -> list[dict[str, Any]]:
     """列出任务（本地 + Redis 镜像合并，按创建时间倒序）。
 

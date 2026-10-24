@@ -11,6 +11,7 @@ from ..models import User
 from ..security import (
     create_token,
     decode_token,
+    decrypt_secret,
     hash_password,
     mask_key,
     password_strength,
@@ -251,7 +252,8 @@ async def write_model_config(body: ModelConfigIn, db: DbSession, user: UserDep):
         provider=cfg.provider,
         model=cfg.model,
         base_url=cfg.base_url,
-        api_key_masked=mask_key(cfg.api_key_ref),
+        # cfg.api_key_ref 现为密文，脱敏展示必须先解密（否则前后缀是密文乱码）
+        api_key_masked=mask_key(decrypt_secret(cfg.api_key_ref)),
         temperature=cfg.temperature,
         max_tokens=cfg.max_tokens,
         purpose=cfg.purpose,

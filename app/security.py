@@ -141,3 +141,54 @@ def mask_key(api_key: str) -> str:
     if len(api_key) <= 10:
         return "*" * len(api_key)
     return f"{api_key[:4]}{'*' * 8}{api_key[-4:]}"
+
+
+# ------------------------------------------------------------- 密钥静态加密
+# 用户级 API Key 落库必须加密（模型配置表被拖走时密钥不能直接可用）。
+# 算法用 Fernet（AES-128-CBC + HMAC，标准实现，来自 cryptography 包）；
+# 密钥从 SECRET_KEY 派生（PBKDF2-SHA256；派生只要求不可逆，盐用固定
+# 应用盐即可 —— SECRET_KEY 本身就是秘密）。
+# 兼容策略：解密失败（存量明文行 / SECRET_KEY 已轮换）时原样返回 ——
+# 旧数据仍可用，新写入一律密文。cryptography 未安装时退化为明文并打日志，
+# 保持"pip 装完即用"的零服务依赖开发体验。
+
+
+def _fernet():
+    try:
+        from cryptography.fernet import Fernet
+    except ImportError:  # pragma: no cover - 开发机未装 cryptography
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "未安装 cryptography，用户 API Key 将明文落库（pip install cryptography 启用加密）"
+        )
+        return None
+    key = hashlib.pbkdf2_hmac(
+        "sha256", settings.SECRET_KEY.encode(), b"aigotutor-apikey-v1", 100_000
+    )
+    return Fernet(base64.urlsafe_b64encode(key))
+
+
+def encrypt_secret(plain: str) -> str:
+    """加密密钥；空串与不可用环境原样返回（空串没有加密意义）。"""
+    if not plain:
+        return ""
+    f = _fernet()
+    if f is None:
+        return plain
+    return f.encrypt(plain.encode()).decode()
+
+
+def decrypt_secret(stored: str) -> str:
+    """解密密钥；非密文输入（存量明文）原样返回。"""
+    if not stored:
+        return ""
+    f = _fernet()
+    if f is None:
+        return stored
+    try:
+        return f.decrypt(stored.encode()).decode()
+    except Exception:
+        # 不是合法密文（历史明文行）或 SECRET_KEY 已轮换 —— 原样返回，
+        # 由调用方（网关 401）暴露问题，而不是在这里把用户配置变成不可用。
+        return stored

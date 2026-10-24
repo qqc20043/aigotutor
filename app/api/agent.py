@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
-from fastapi import APIRouter, Header, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 
 from ..agents import AGENTS, CORE_AGENTS
@@ -17,6 +17,7 @@ from ..core.tasks import (
     list_tasks,
     sse_format,
     submit,
+    task_owner,
     wait,
 )
 from ..core.tasks import (
@@ -88,7 +89,6 @@ async def stream_agent(
     body: AgentRunIn,
     user: UserDep,
     cfg: ModelConfigDep,
-    x_accel_buffering: str | None = Header(default=None),
 ):
     """单 Agent token 级流式（SSE）。
 
@@ -249,8 +249,21 @@ async def run_pipeline(body: PipelineIn, db: DbSession, user: UserDep, cfg: Mode
 
 
 @router.get("/stream", response_class=StreamingResponse)
-async def stream_events(task_id: str = Query(min_length=1), from_index: int = 0):
-    """31 SSE 事件流：进度 / 单 Agent 结果 / 完成 / 取消。"""
+async def stream_events(
+    user: UserDep,
+    task_id: str = Query(min_length=1),
+    from_index: int = 0,
+):
+    """31 SSE 事件流：进度 / 单 Agent 结果 / 完成 / 取消。
+
+    必须登录且只能是自己的任务：事件里会流出该用户的代码与 Agent 输出，
+    此前这里完全没有鉴权（匿名可订阅任意 task_id）。前端用 fetch 消费
+    SSE（stream.ts），Authorization header 天然可用，无需 token 查询参数。
+    """
+
+    owner = task_owner(task_id)
+    if owner is not None and owner != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "任务不存在")
 
     async def gen():
         yield sse_format({"event": "open", "data": {"task_id": task_id}})
@@ -305,9 +318,11 @@ async def task_detail(task_id: str, user: UserDep):
 
     必须走 task_detail() 而不是 get_task()：后者只查本进程字典，
     多 worker 下轮询被负载均衡到别的 worker 会随机 404。
+    只能查自己的任务（结果含本人代码与 Agent 输出）。
     """
     snapshot = task_detail_snapshot(task_id)
-    if snapshot is None:
+    owner = task_owner(task_id)
+    if snapshot is None or (owner is not None and owner != user.id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "任务不存在")
     return snapshot
 
@@ -318,14 +333,25 @@ async def task_cancel(task_id: str, user: UserDep):
 
     任务在别的 worker 上时，cancel() 会写跨进程取消信号，由 owner 侧的
     轮询任务感知并取消本地句柄（asyncio 句柄无法跨进程传递）。
+    只能取消自己的任务。
     """
+    owner = task_owner(task_id)
+    if owner is not None and owner != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "任务不存在")
     ok = cancel(task_id)
     return {"ok": ok, "task": task_detail_snapshot(task_id)}
 
 
 @task_router.post("/{task_id}/wait", response_model=dict)
-async def task_wait(task_id: str, user: UserDep, timeout: float = 60.0):
-    """36 同步等待任务结束（测试与脚本用）。"""
+async def task_wait(task_id: str, user: UserDep, timeout: float = Query(default=60.0, le=300.0)):
+    """36 同步等待任务结束（测试与脚本用）。只能等自己的任务。
+
+    timeout 设上界（300s）：无上界时一个 ?timeout=1e6 的请求能长期占用
+    worker 连接。
+    """
+    owner = task_owner(task_id)
+    if owner is not None and owner != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "任务不存在")
     try:
         return await wait(task_id, timeout)
     except KeyError:
