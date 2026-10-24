@@ -74,6 +74,7 @@ async def mastery_overview(
             "ac_count": ac,
             "tag_count": len(tag_stats),
             "degraded": result.get("degraded", False),
+            "cached": bool(result.get("cached")),
             "rule_baseline": result.get("rule_baseline", {}),
         },
     )

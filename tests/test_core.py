@@ -491,3 +491,24 @@ def test_solution_fallback_for_cpp_and_java():
     for lang, marker in (("cpp", "#include"), ("java", "public class")):
         out = rule_solution({"language": lang, "tags": []})
         assert out is not None and marker in out.code
+
+
+# ==================================================== 时间衰减量化（缓存键稳定性）
+def test_time_decay_day_quantized():
+    """衰减按天量化：同一天内多次调用输出必须逐位相等。
+
+    真实故障：连续衰减让 compute_tag_stats 输出随当前时刻漂移（float
+    第 15 位），build_user JSON 每次微变 → Agent 缓存键永不命中 →
+    掌握度画像页每次打开都同步等 LLM 12-19 秒（用户见"一直转圈"）。
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from app.core.mastery import time_decay
+
+    now = datetime.now(timezone.utc)
+    dt = now - timedelta(hours=5)
+    a = time_decay(dt, now)
+    b = time_decay(dt, now + timedelta(seconds=3))  # 同一天内推进几秒
+    c = time_decay(dt, now + timedelta(days=1))  # 跨天必须变化
+    assert a == b, "同一天内衰减必须稳定（缓存键依赖它）"
+    assert a != c, "跨天必须衰减"

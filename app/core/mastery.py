@@ -24,7 +24,14 @@ def level_of(score: float) -> str:
 
 
 def time_decay(dt: datetime | None, now: datetime | None = None) -> float:
-    """时间衰减：半衰期 21 天，越近的提交权重越高。"""
+    """时间衰减：半衰期 21 天，越近的提交权重越高。
+
+    衰减按"天"量化（age_days 取整）：连续衰减会让输出随当前时刻逐秒
+    漂移（第 15 位小数都在变），导致 build_user 的 JSON 每次不同 →
+    Agent 结果缓存的键永不命中 → 掌握度画像页每次打开都真调 LLM
+    （12-19 秒转圈，实测根因）。量化到天后输出在同一天内稳定，
+    业务语义零损失（半衰期本来就是 21 天尺度）。
+    """
     if dt is None:
         return 0.5
     now = now or datetime.now(timezone.utc)
@@ -32,8 +39,8 @@ def time_decay(dt: datetime | None, now: datetime | None = None) -> float:
         dt = dt.replace(tzinfo=timezone.utc)
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
-    days = max(0.0, (now - dt).total_seconds() / 86400.0)
-    return math.exp(-math.log(2) * days / HALF_LIFE_DAYS)
+    age_days = int(max(0.0, (now - dt).total_seconds()) // 86400.0)
+    return math.exp(-math.log(2) * age_days / HALF_LIFE_DAYS)
 
 
 def confidence_of(total_attempts: float, distinct_tags: int = 1) -> float:
