@@ -69,6 +69,24 @@ class RecommendAgent(BaseAgent[RecommendOut]):
                     "reason": f"（模型给出的题目不在候选列表，已回退规则引擎）{rule_out.reason}"
                 }
             )
+        # 描述性字段按候选回填：真模型会漏掉 tags/title（deepseek 实测三次
+        # 全漏 tags，schema 只好放宽默认值），事实性内容以候选数据为准。
+        src = next(
+            (
+                c
+                for c in candidates
+                if str(c.get("problem_id") or c.get("id") or "") == data.problem_id
+            ),
+            None,
+        )
+        if src is not None:
+            updates: dict[str, object] = {}
+            if not data.tags:
+                updates["tags"] = [str(t) for t in (src.get("tags") or [])][:6]
+            if not data.title:
+                updates["title"] = str(src.get("title") or "")
+            if updates:
+                data = data.model_copy(update=updates)
         return data
 
     def run_rule(self, ctx: AgentContext) -> RecommendOut:

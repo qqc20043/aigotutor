@@ -77,12 +77,17 @@ class DifficultyOut(BaseModel):
 
 
 class RecommendOut(BaseModel):
-    """推荐 Agent：下一题 + 为什么是它。"""
+    """推荐 Agent：下一题 + 为什么是它。
+
+    tags 允许为空：真模型实测（deepseek）会稳定漏掉描述性字段导致校验
+    失败重试，而 RecommendAgent.postprocess 会按 problem_id 从候选回填 ——
+    schema 宽容 + 后处理补齐，比"指望模型每次完整复述"可靠。
+    """
 
     problem_id: str
     title: str = ""
     difficulty: Difficulty
-    tags: list[str] = Field(min_length=1)
+    tags: list[str] = Field(default_factory=list, max_length=6)
     reason: str = Field(min_length=1, max_length=600)
     expected_gain: float = Field(ge=0, le=20, default=0.0, description="预期掌握度提升")
 
@@ -155,7 +160,10 @@ class HintOut(BaseModel):
     strength: HintStrength = Field(description="提示强度：direction 最弱、pseudocode 最强")
     hints: list[str] = Field(
         min_length=1,
-        max_length=3,
+        # 上限故意放宽到 6：真模型偶尔会多给一条（实测 pseudocode 档输出
+        # 3 步骨架 + 1 条手算验证），postprocess 会裁剪到强度对应条数 ——
+        # 校验层直接拒绝只会白白触发整单重试。
+        max_length=6,
         description="按强度从弱到强的提示，条数与 strength 对应",
     )
     key_insight: str = Field(
@@ -171,11 +179,16 @@ class HintOut(BaseModel):
 
 
 class ReviewPriorityItem(BaseModel):
-    """复习队列里的一项：题目 + 排在第几位 + 为什么。"""
+    """复习队列里的一项：题目 + 排在第几位 + 为什么。
+
+    order 允许缺省（默认 1）：真模型会漏掉"可从列表顺序推断"的字段
+    （deepseek 实测三次全漏），而 ReviewAgent.postprocess 本来就会按
+    实际顺序重编号 —— 校验层不必为这个字段整单作废重试。
+    """
 
     problem_id: str = Field(min_length=1)
     title: str = ""
-    order: int = Field(ge=1, description="1 = 今天最先复习")
+    order: int = Field(default=1, ge=1, description="1 = 今天最先复习")
     reason: str = Field(min_length=1, max_length=400, description="为什么排这个位置")
     urgency: str = Field(default="", max_length=80, description="紧迫度标签，如「逾期 6 天」")
 
@@ -185,13 +198,17 @@ class ReviewPriorityOut(BaseModel):
 
     与 FSRS 的分工：FSRS 决定"何时到期"，本 Agent 决定"到期后先做哪个"。
     间隔重复是记忆科学问题，排序是学习策略问题，两者不混在一起。
+
+    strategy 允许缺省：真模型会自创同义字段名（ordering_intent / notes，
+    实测两种都出现过），schema 层拒绝只会整单作废重试；ReviewAgent
+    的 postprocess 会用规则口径回填。
     """
 
     ordered: list[ReviewPriorityItem] = Field(
         min_length=1, max_length=20, description="按优先级排序的复习清单"
     )
     strategy: str = Field(
-        min_length=1, max_length=400, description="整体编排意图（为什么是这个顺序）"
+        default="", max_length=400, description="整体编排意图（为什么是这个顺序）"
     )
     confidence: float = Field(ge=0, le=1, default=0.8)
 
@@ -203,6 +220,11 @@ QUALITY_DIMENSIONS: list[str] = ["正确性", "可读性", "效率", "边界处�
 # 取值理由：太小则语义修正无意义（模型只能照抄规则分），太大则规则阶段的
 # 客观约束失效。±12 分意味着"档位不会跨两级"，与难度标注的 ±1 档同思路。
 QUALITY_RADIUS: float = 12.0
+
+# 掌握度修正窗口：与 QUALITY_RADIUS 同构。规则基线由 tag_stats 客观算出，
+# 模型只做窗口内语义修正（真模型实测：无约束时会把 85 分的基线评到 68 分，
+# 偏离 17 分）。
+MASTERY_RADIUS: float = 15.0
 
 
 class QualityDimension(BaseModel):

@@ -696,13 +696,33 @@ def rule_quality(ctx_data: dict[str, Any]) -> QualityOut:
 
 
 # ---------------------------------------------------------- 掌握度规则引擎
+# 档位映射单一来源：分数 -> L1..L5。rule_mastery 的两条路径（有样本/零样本）
+# 与评估断言（app/evals/checks.py）都必须引用这里，避免口径漂移。
+# 真实故障：零样本分支曾硬编码 level="L3"，而 50 分按主路径映射应为 L2 ——
+# 同一个分数在不同路径下展示不同档位（行为评估首轮暴露）。
+MASTERY_LEVEL_BANDS: tuple[tuple[str, float], ...] = (
+    ("L2", 40.0),
+    ("L3", 55.0),
+    ("L4", 70.0),
+    ("L5", 85.0),
+)
+
+
+def mastery_level_for(score: float) -> str:
+    level = "L1"
+    for name, threshold in MASTERY_LEVEL_BANDS:
+        if score >= threshold:
+            level = name
+    return level
+
+
 def rule_mastery(ctx_data: dict[str, Any]) -> MasteryOut:
     """加权正确率 + 样本量置信度，输出 0-100 与五级。"""
     tag_stats: dict[str, dict[str, float]] = ctx_data.get("tag_stats") or {}
     if not tag_stats:
         return MasteryOut(
             score=50.0,
-            level="L3",
+            level=mastery_level_for(50.0),  # type: ignore[arg-type]
             confidence=0.1,
             weak_tags=[],
             strong_tags=[],
@@ -739,13 +759,15 @@ def rule_mastery(ctx_data: dict[str, Any]) -> MasteryOut:
         ),
         key=lambda x: x[1],
     )
-    weak = [t for t, _ in ranked[:3]]
+    # 强项按绝对门槛取，弱项在强项之外取 —— 两者必须互斥。
+    # 真实故障：标签数 ≤3 且全部正确率 >0.6 时，ranked[:3] 与 ranked[-3:]
+    # 会命中同一批标签，同一个知识点同时出现在"弱项"与"强项"里（行为评估
+    # 首轮即暴露）。全部标签都强时弱项为空是诚实语义，不该硬凑。
     strong = [t for t, _ in ranked[-3:] if _ > 0.6][::-1]
+    strong_set = set(strong)
+    weak = [t for t, _ in ranked[:3] if t not in strong_set]
 
-    level = "L1"
-    for name, threshold in (("L2", 40), ("L3", 55), ("L4", 70), ("L5", 85)):
-        if score >= threshold:
-            level = name
+    level = mastery_level_for(score)
 
     suggestion = (
         f"优先补强「{weak[0]}」，当前正确率 {ranked[0][1] * 100:.0f}%；"

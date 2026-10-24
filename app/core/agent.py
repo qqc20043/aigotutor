@@ -29,6 +29,52 @@ from .providers import LLMError, LLMResult, Provider, _approx_tokens, build_prov
 T = TypeVar("T", bound=BaseModel)
 
 
+def repair_broken_json(text: str) -> str:
+    """修复模型输出里最常见的断症：字符串值内部的未转义双引号。
+
+    真实故障（行为评估首轮，deepseek 网关）：模型在中文句子里写
+    `符合"先难后易"的编排意图`，ASCII 引号直接把 JSON 打断，且该模型
+    网关不遵守 strict json_schema（response_format 被无视），三次重试
+    全部同型失败 → 链路降级。
+
+    修复策略：逐字符扫描，处于字符串内部且"后面不是结构性字符"的
+    `"` 判定为值内引号，转义为 \\"。结构性判定：引号后（跳过空白）是
+    , } ] : 之一才算字符串终止，否则视为值内引号。
+    """
+    if '"' not in text:
+        return text
+    out: list[str] = []
+    in_string = False
+    escaped = False
+    n = len(text)
+    for i, ch in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+                out.append(ch)
+                continue
+            if ch == "\\":
+                escaped = True
+                out.append(ch)
+                continue
+            if ch == '"':
+                j = i + 1
+                while j < n and text[j] in " \t\r\n":
+                    j += 1
+                if j >= n or text[j] in ",}]:":
+                    in_string = False  # 真正的字符串终止
+                    out.append(ch)
+                else:
+                    out.append('\\"')  # 值内引号，转义
+                continue
+            out.append(ch)
+        else:
+            if ch == '"':
+                in_string = True
+            out.append(ch)
+    return "".join(out)
+
+
 @dataclass
 class AgentContext:
     """Agent 执行上下文：所有输入数据都在这里，Agent 不直接碰数据库。"""
@@ -334,7 +380,7 @@ class BaseAgent(Generic[T]):
         return schema
 
     def parse(self, text: str) -> T:
-        """容错解析：直接 JSON -> 剥离 ```json 代码块 -> 截取首个 {..}。"""
+        """容错解析：直接 JSON -> 剥离 ```json 代码块 -> 截取首个 {..} -> 修复断 JSON。"""
         text = (text or "").strip()
         if text.startswith("```"):
             text = text.split("```")[1]
@@ -346,7 +392,13 @@ class BaseAgent(Generic[T]):
         except ValidationError:
             start, end = text.find("{"), text.rfind("}")
             if start >= 0 and end > start:
-                return self.schema.model_validate_json(text[start : end + 1])
+                candidate = text[start : end + 1]
+                try:
+                    return self.schema.model_validate_json(candidate)
+                except ValidationError:
+                    repaired = repair_broken_json(candidate)
+                    if repaired != candidate:
+                        return self.schema.model_validate_json(repaired)
             raise
 
     def postprocess(self, data: T, ctx: AgentContext) -> T:

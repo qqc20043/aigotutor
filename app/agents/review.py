@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 
 from ..core.agent import AgentContext, BaseAgent
-from ..core.rules import rule_review_priority
+from ..core.rules import REVIEW_MINUTES_PER_PROBLEM, rule_review_priority
 from ..schemas import ReviewPriorityOut
 
 SYSTEM = """你是算法刷题教练，负责决定学生「今天先复习哪几道题」，并给出可解释的理由。
@@ -42,8 +42,9 @@ SYSTEM = """你是算法刷题教练，负责决定学生「今天先复习哪�
 1. problem_id / title 必须来自候选列表，一个字都不能改，不允许编造；
 2. ordered 里每道题都要给出 reason，且必须点名具体的逾期天数或掌握度数字，
    禁止"这题比较重要"这类空话；
-3. 如果给了 time_budget_minutes，挑出的题数要与之匹配（每题按 15 分钟估算），
-   宁可少挑也不要给一个做不完的队列；
+3. time_budget_minutes 为 null 表示不限时，给出完整排序；不是 null 时挑出的
+   题数要与预算匹配（每题按 15 分钟估算），宁可少挑也不要给一个做不完的队列。
+   无论如何 ordered 都不能为空——至少给出 1 项；
 4. 只输出 JSON。"""
 
 
@@ -68,9 +69,20 @@ class ReviewAgent(BaseAgent[ReviewPriorityOut]):
             }
             for p in candidates
         ]
+        budget = int(ctx.get("time_budget_minutes", 0) or 0)
+        # 预算 0 的语义有歧义：规则层把 0 当"不限时"，但模型会按字面计算
+        # "0 分钟 ÷ 15 = 0 道题"并返回空队列（真模型实测三次均如此，撞上
+        # schema min_length=1 直接降级）。因此"不限时"必须显式表达为 null，
+        # 并用 budget_note 把口径写给模型，不留自由发挥空间。
         payload = {
             "candidates": slim,
-            "time_budget_minutes": ctx.get("time_budget_minutes", 0),
+            "time_budget_minutes": budget if budget > 0 else None,
+            "budget_note": (
+                f"每题按 {REVIEW_MINUTES_PER_PROBLEM} 分钟估算，"
+                f"最多挑 {max(1, budget // REVIEW_MINUTES_PER_PROBLEM)} 题。"
+                if budget > 0
+                else "未设置时间预算：不限时，给出完整到期排序（按优先级，不超过 20 项）。"
+            ),
             "daily_goal": ctx.get("daily_goal", 3),
             "weak_tags": ctx.get("weak_tags", []),
             "rule_baseline_order": ctx.get("rule_baseline_order", []),
@@ -99,7 +111,15 @@ class ReviewAgent(BaseAgent[ReviewPriorityOut]):
 
         # 按模型给出的顺序重编号，保证 order 字段连续（前端直接按此渲染）
         renumbered = [item.model_copy(update={"order": i + 1}) for i, item in enumerate(ordered)]
-        return data.model_copy(update={"ordered": renumbered})
+        updates: dict[str, object] = {"ordered": renumbered}
+        if not data.strategy:
+            # 模型自创字段名（ordering_intent/notes）或漏写时，用规则口径回填
+            top = renumbered[0]
+            updates["strategy"] = (
+                f"按逾期紧迫度与掌握度缺口优先，先处理「{top.title or top.problem_id}」，"
+                f"共 {len(renumbered)} 项。"
+            )
+        return data.model_copy(update=updates)
 
     def run_rule(self, ctx: AgentContext) -> ReviewPriorityOut:
         return rule_review_priority(ctx.data)

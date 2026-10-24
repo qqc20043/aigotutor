@@ -219,6 +219,10 @@ class MockProvider:
             return self._judge_from_prompt(payload)
         if title == "HintOut" and payload:
             return self._hint_from_prompt(payload)
+        if title == "ReviewPriorityOut" and payload:
+            review = self._review_from_prompt(payload)
+            if review is not None:
+                return review
         if title == "QualityOut" and payload:
             return self._quality_from_prompt(payload)
         if title in ("MasteryOut", "RoadmapOut") and payload.get("rule_baseline"):
@@ -417,6 +421,52 @@ class MockProvider:
             "strength_reason": str(
                 payload.get("strength_reason") or "Mock：强度由掌握度规则层决定。"
             ),
+            "confidence": 0.75,
+        }
+
+    def _review_from_prompt(self, payload: dict[str, Any]) -> dict[str, Any] | None:
+        """复习排序：mock 没有排序智能，遵从规则基线（与 mastery/quality 同一原则）。
+
+        真实故障背景：mock 此前对该 Agent 没有专门处理，落到静态 FIXTURES
+        （固定 id 不在任何候选里）→ ReviewAgent.postprocess 全部过滤 → 每次
+        都回退规则引擎。后果是"mock 下 review 的模型路径从未被真实测过"，
+        Agent 行为评估一上就暴露了。
+        """
+        order = payload.get("rule_baseline_order") or []
+        candidates = {
+            str(c.get("problem_id") or c.get("id") or ""): c
+            for c in (payload.get("candidates") or [])
+        }
+        ordered: list[dict[str, Any]] = []
+        for pid in order:
+            c = candidates.get(str(pid))
+            if not c:
+                continue
+            overdue = float(c.get("overdue_days") or 0.0)
+            lapses = int(c.get("lapses") or 0)
+            mastery = c.get("mastery_scores") or {}
+            tags = c.get("tags") or []
+            weakest = min((float(mastery.get(t, 50.0)) for t in tags), default=50.0)
+            bits = []
+            if overdue > 0:
+                bits.append(f"逾期 {overdue:.1f} 天")
+            bits.append(f"「{tags[0] if tags else '本题'}」掌握度 {weakest:.0f} 分")
+            if lapses > 0:
+                bits.append(f"已遗忘 {lapses} 次")
+            ordered.append(
+                {
+                    "problem_id": str(pid),
+                    "title": str(c.get("title") or ""),
+                    "order": len(ordered) + 1,
+                    "reason": f"Mock 排序：{'、'.join(bits)}，与规则基线一致。",
+                    "urgency": f"逾期 {overdue:.1f} 天" if overdue > 0 else "今日到期",
+                }
+            )
+        if not ordered:
+            return None  # 无候选/空基线：回到静态兜底（含占位语义）
+        return {
+            "ordered": ordered,
+            "strategy": "Mock：遵从规则基线排序（无额外语义信息，不做重排）。",
             "confidence": 0.75,
         }
 

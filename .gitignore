@@ -57,3 +57,6 @@ web/.pnpm-store/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# 评估报告是机器产物（含模型原始输出），结论沉淀进 docs 执行记录
+evals/reports/

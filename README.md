@@ -26,13 +26,18 @@ python run.py                     # http://127.0.0.1:8000
 
 ```bash
 # 5. 验证
-python -m pytest                      # 294 项单元 + 集成测试
+python -m pytest                      # 312 项单元 + 集成测试
 python -m pytest --cov=app            # 覆盖率（CI 阈值 75%）
 python -m ruff check .                # 代码质量（0 告警）
-python scripts/judge_selftest.py      # 判题沙箱自测 10/10
+python scripts/judge_selftest.py      # 判题沙箱自测（本机可用语言全过，CI 全语言 14/14）
 python scripts/check_migrations.py    # Alembic 迁移 9/9
 python scripts/check_deploy.py        # 部署配置校验
 python -m scripts.eval_difficulty     # 难度标注一致性评测
+python scripts/eval_agents.py         # Agent 行为评估（11 场景 golden set，mock 离线）
+
+# 真模型抽检（改提示词前后各跑一份报告做对比；provider 走环境变量）
+AIGOTUTOR_PROVIDER=openai AIGOTUTOR_BASE_URL=... AIGOTUTOR_API_KEY=... \
+  python scripts/eval_agents.py
 
 # 端到端（需先启动服务）
 python scripts/smoke.py               # 31 项基础 HTTP 冒烟
@@ -283,6 +288,19 @@ START → judge → mastery ─┬─(有候选)→ recommend ─┬─(有标�
 图只负责编排。图节点里另有一层 `try/except` 不是替代 Agent 降级，而是防止 Agent 层意外抛出
 把整张图打断（双保险）。
 
+### Agent 行为评估（改提示词的回归防线）
+
+`app/evals/` + `scripts/eval_agents.py`：11 个场景钉住 5 个核心 Agent 的对外承诺
+——提示强度必须等于规则算定值、复习 Top-1 必须与规则基线一致、候选防幻觉、
+时间预算不被超出、掌握度单调性与档位自洽、先修关系在前。评估断言
+**pipeline 最终输出**（postprocess 之后），期望值从规则层现算，不维护第二份口径。
+
+- **mock 下全绿进 CI**（`tests/test_evals.py`）：无信息的模型都该遵守的约束，
+  真实模型更没有借口；
+- **真模型抽检出报告**：`--provider openai` 跑同一套场景，Markdown/JSON
+  报告人工审阅，改提示词前后对比。首轮真模型评估就揪出 8 个"mock 全绿
+  但真模型必挂"的真实缺陷（详见 `docs/2026-10-24-Agent行为评估与真模型全链路验证.md`）。
+
 ## 简历主张 → 实现对照
 
 | 简历原文 | 实现位置 | 验证方式 |
@@ -303,6 +321,7 @@ START → judge → mastery ─┬─(有候选)→ recommend ─┬─(有标�
 | **多 Agent 统一基于 LangGraph 编排** | `core/graph.py`（StateGraph + 条件边 + reducer 状态合并） | `test_graph_conditional_*`、`test_graph_state_reducer_accumulates_all_nodes` |
 | **Redis**（限流/缓存/分布式锁） | `core/redis_client.py`、`middleware.py`、`core/cache.py`、`core/lock.py` | `test_rate_limiter_falls_back_to_local`、`test_lock_falls_back_to_local` |
 | 长链路后台任务 + 轮询 + 流式 + 中断 | `core/tasks.py`、`api/agent.py` | `test_pipeline_async_task_and_sse`、`test_pipeline_task_cancel` |
+| **Agent 行为评估：改动有回归防线，不是"感觉变好了"** | `app/evals/`（11 场景 golden set + 规则断言 + Kendall tau 排序保真度）、`scripts/eval_agents.py` | mock 下全绿进 CI（`tests/test_evals.py`）；真模型抽检出 Markdown 报告，详见 `docs/2026-10-24-Agent行为评估与真模型全链路验证.md` |
 
 ## 架构
 

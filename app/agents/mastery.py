@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 
 from ..core.agent import AgentContext, BaseAgent
-from ..core.rules import rule_mastery
-from ..schemas import MasteryOut
+from ..core.rules import mastery_level_for, rule_mastery
+from ..schemas import MASTERY_RADIUS, MasteryOut
 
 SYSTEM = """你是算法学习状态分析师。根据用户近期的提交统计，给出 0-100 的学习状态评分。
 
@@ -40,20 +40,34 @@ class MasteryAgent(BaseAgent[MasteryOut]):
         return json.dumps(payload, ensure_ascii=False, indent=2)
 
     def postprocess(self, data: MasteryOut, ctx: AgentContext) -> MasteryOut:
-        """level 必须与 score 口径自洽，模型自相矛盾时以分数为准重算。"""
+        """三重硬约束：分数夹紧窗口、强弱项互斥、标签限定输入。
+
+        真模型实测（行为评估首轮）：无约束时模型会把 85.3 分的基线评到 68
+        （Δ=17.3），并把同一个标签同时放进 weak_tags 与 strong_tags ——
+        与 difficulty/quality 的两阶段哲学一致：规则基线是客观事实，
+        模型只在窗口内做语义修正。
+        """
         score = max(0.0, min(100.0, data.score))
-        level = "L1"
-        for name, threshold in (("L2", 40), ("L3", 55), ("L4", 70), ("L5", 85)):
-            if score >= threshold:
-                level = name
-        # 标签必须真实存在于统计里
+        baseline = ctx.get("rule_baseline") or {}
+        try:
+            base_score = float(baseline.get("score"))
+        except (TypeError, ValueError):
+            base_score = None
+        if base_score is not None:
+            score = max(base_score - MASTERY_RADIUS, min(base_score + MASTERY_RADIUS, score))
+            score = max(0.0, min(100.0, score))
+
+        # 标签必须真实存在于统计里；过滤后为空就是空 —— 宁可少说也不放
+        # 幻觉标签（旧的 `or 原始列表` 回退正是幻觉混入的通道，已删）。
         known = set((ctx.get("tag_stats") or {}).keys())
-        weak = [t for t in data.weak_tags if t in known][:5] or data.weak_tags[:5]
-        strong = [t for t in data.strong_tags if t in known][:5] or data.strong_tags[:5]
+        strong = [t for t in data.strong_tags if t in known][:5]
+        strong_set = set(strong)
+        # 强项按绝对门槛认定，弱项在强项之外取（与规则引擎同一互斥口径）
+        weak = [t for t in data.weak_tags if t in known and t not in strong_set][:5]
         return data.model_copy(
             update={
                 "score": round(score, 2),
-                "level": level,
+                "level": mastery_level_for(score),  # type: ignore[arg-type]
                 "weak_tags": weak,
                 "strong_tags": strong,
             }
