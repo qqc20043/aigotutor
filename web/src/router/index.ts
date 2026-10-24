@@ -127,9 +127,27 @@ router.beforeEach(async (to) => {
   return true
 })
 
+// 部署后用户仍持有旧 index.html：点菜单时按需加载的页面 chunk 请求旧
+// hash 文件名 -> 404 -> 动态 import 失败 -> 导航静默中止（表现为"点了没
+// 反应"，2026-10-24 实测复现两次）。兜底：整页重载一次拿新 index.html
+// 即愈；afterEach 里清标记，保证后续部署还能各自恢复一次，不会死循环。
+router.onError((error, to) => {
+  const msg = String((error as Error)?.message || "")
+  const chunkFail =
+    msg.includes("Failed to fetch dynamically imported module") ||
+    msg.includes("Importing a module script failed") ||
+    msg.includes("error loading dynamically imported module") ||
+    msg.includes("Loading chunk")
+  if (chunkFail && !sessionStorage.getItem("aigotutor_chunk_reload")) {
+    sessionStorage.setItem("aigotutor_chunk_reload", "1")
+    window.location.href = to?.fullPath || "/"
+  }
+})
+
 router.afterEach((to) => {
   const title = (to.meta.title as string) || ''
   document.title = title ? `${title} · AIgoTutor` : 'AIgoTutor'
+  sessionStorage.removeItem("aigotutor_chunk_reload")
 })
 
 export default router
