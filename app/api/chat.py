@@ -100,7 +100,7 @@ async def create_session(body: SessionCreateIn, db: DbSession, user: UserDep):
 
 
 @router.get("/sessions")
-async def list_sessions(db: DbSession, user: UserDep, limit: int = Query(default=20, le=100)):
+async def list_sessions(db: DbSession, user: UserDep, limit: int = Query(default=20, ge=1, le=100)):
     rows = (
         (
             await db.execute(

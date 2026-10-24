@@ -40,6 +40,8 @@ RATE_GROUPS: dict[str, int | None] = {
     "/api/agent/run": 30,
     "/api/agent/stream": 30,
     "/api/agent/pipeline": 15,
+    # 对话辅导：每条消息一次 LLM 调用（会话 CRUD 低频，同组不影响）
+    "/api/chat/sessions/": 30,
     "/api/submissions": 60,
     "/api/submissions/": 60,
     # 判题：CPU 密集

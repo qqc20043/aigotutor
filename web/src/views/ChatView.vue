@@ -62,14 +62,25 @@ async function openOrCreateForProblem() {
 }
 
 async function createSession() {
-  const s = await chatApi.createSession(problemId.value)
-  current.value = s
-  messages.value = []
-  await loadSessions()
+  try {
+    const s = await chatApi.createSession(problemId.value)
+    current.value = s
+    messages.value = []
+    await loadSessions()
+  } catch {
+    ElMessage.error('创建会话失败（题目可能已不存在），已切换为自由辅导')
+    const s = await chatApi.createSession('')
+    current.value = s
+    messages.value = []
+    await loadSessions()
+  }
 }
 
 /** 发送一条消息：POST + SSE 流式解析（open -> token* -> done） */
-async function send() {
+async function send(event?: KeyboardEvent) {
+  // 中文输入法在组词/选词时也会触发 Enter（isComposing=true），
+  // 此时是"确认候选词"而不是"发送"，必须放行给输入法处理
+  if (event?.isComposing || event?.keyCode === 229) return
   const content = input.value.trim()
   if (!content || sending.value || !current.value) return
   input.value = ''
@@ -247,7 +258,7 @@ onBeforeUnmount(() => abort?.())
           :rows="2"
           placeholder="向教练提问（Enter 发送，Shift+Enter 换行）"
           :disabled="sending"
-          @keydown.enter.exact.prevent="send"
+          @keydown.enter.exact.prevent="send($event)"
         />
         <el-button type="primary" :loading="sending" @click="send">发送</el-button>
       </div>

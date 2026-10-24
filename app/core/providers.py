@@ -571,6 +571,31 @@ class MockProvider:
             await asyncio.sleep(0.01)
             yield text[i : i + 12]
 
+    # ------------------------------------------------ 对话式（自由文本多轮）
+    # chat 引擎对 mock 有短路，但 Protocol 声明了这两个方法 —— 直接持有
+    # MockProvider 的调用方（测试/脚本）不应拿到 AttributeError。
+    async def complete_chat(
+        self, messages: list[dict[str, str]], model: str = "mock-1", **kw: Any
+    ) -> LLMResult:
+        last = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
+        text = f"Mock 回复：已收到「{last[:60]}」。离线模式下请使用规则引擎路径查看结构化辅导。"
+        return LLMResult(
+            text=text,
+            prompt_tokens=_approx_tokens(str(messages)),
+            completion_tokens=_approx_tokens(text),
+            latency_ms=1,
+            model=model,
+            provider=self.name,
+        )
+
+    async def stream_chat(
+        self, messages: list[dict[str, str]], model: str = "mock-1", **kw: Any
+    ) -> AsyncIterator[str]:
+        result = await self.complete_chat(messages, model, **kw)
+        for i in range(0, len(result.text), 12):
+            await asyncio.sleep(0.01)
+            yield result.text[i : i + 12]
+
 
 # ------------------------------------------------------------------- OpenAI
 class OpenAIProvider:

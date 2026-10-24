@@ -114,14 +114,19 @@ async def ensure_fts(db) -> dict[str, Any]:
 
     rebuilt = False
     if stale and n_problems:
-        await db.execute(text("DELETE FROM problems_fts"))
-        await db.execute(
-            text(
-                "INSERT INTO problems_fts(title, statement, problem_id, updated_at) "
-                "SELECT title, COALESCE(statement, ''), id, updated_at FROM problems"
+        try:
+            await db.execute(text("DELETE FROM problems_fts"))
+            await db.execute(
+                text(
+                    "INSERT INTO problems_fts(title, statement, problem_id, updated_at) "
+                    "SELECT title, COALESCE(statement, ''), id, updated_at FROM problems"
+                )
             )
-        )
-        rebuilt = True
+            rebuilt = True
+        except Exception:
+            # 并发重建撞写锁（busy_timeout 也可能不够）时降级：沿用旧索引，
+            # 标签召回（纯 SQL）不受影响，下一次请求会再尝试重建
+            rebuilt = False
     return {"rebuilt": rebuilt, "rows": n_problems}
 
 
