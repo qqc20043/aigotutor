@@ -32,6 +32,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '做题', hidden: true },
       },
       {
+        path: 'chat/:problemId?',
+        name: 'chat',
+        component: () => import('@/views/ChatView.vue'),
+        meta: { title: '对话辅导', icon: 'ChatDotRound' },
+      },
+      {
         path: 'mastery',
         name: 'mastery',
         component: () => import('@/views/MasteryView.vue'),

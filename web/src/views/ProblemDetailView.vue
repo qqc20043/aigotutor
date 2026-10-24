@@ -7,6 +7,7 @@ import { streamAgent, streamTask } from '@/api/stream'
 import type {
   JudgeBackendInfo,
   ProblemDetail,
+  SimilarProblem,
   Submission,
   SubmitResult,
   TaskSnapshot,
@@ -307,8 +308,28 @@ watch(problemId, () => {
   void loadProblem()
 })
 
+/** 举一反三：同型题检索（与题目一起加载；检索层可解释） */
+const similarLoading = ref(false)
+const similar = ref<{ items: SimilarProblem[]; retrieval: { rebuilt: boolean; rows: number; candidates: number } }>({
+  items: [],
+  retrieval: { rebuilt: false, rows: 0, candidates: 0 },
+})
+
+async function loadSimilar() {
+  similarLoading.value = true
+  try {
+    const res = await problemApi.similar(problemId.value)
+    similar.value = res
+  } catch {
+    /* 检索失败不阻塞做题主流程 */
+  } finally {
+    similarLoading.value = false
+  }
+}
+
 onMounted(() => {
   void loadProblem()
+  void loadSimilar()
 })
 
 onBeforeUnmount(() => {
@@ -491,6 +512,42 @@ onBeforeUnmount(() => {
             <el-descriptions-item label="突破口">{{ hint.key_insight }}</el-descriptions-item>
             <el-descriptions-item label="下一步">{{ hint.next_step }}</el-descriptions-item>
           </el-descriptions>
+
+          <div style="margin-top: 12px; text-align: right">
+            <el-button link size="small" @click="router.push(`/chat/${problemId}`)">
+              还是不懂？进入对话式辅导 →
+            </el-button>
+          </div>
+        </el-card>
+
+        <!-- 举一反三：同型题检索（FTS5 + 标签/难度混合排序） -->
+        <el-card v-if="similar.items.length" class="page-card" shadow="never">
+          <template #header>
+            <div style="display: flex; align-items: center; gap: 10px">
+              <span>举一反三 · 同型题</span>
+              <el-tag size="small" effect="plain" type="info">
+                {{ similar.retrieval.candidates }} 个候选 · {{ similar.retrieval.rebuilt ? '索引已重建' : '索引复用' }}
+              </el-tag>
+              <div class="flex-spacer" />
+              <el-button link size="small" :loading="similarLoading" @click="loadSimilar">刷新</el-button>
+            </div>
+          </template>
+          <div class="similar-list">
+            <div
+              v-for="item in similar.items"
+              :key="item.problem_id"
+              class="similar-item"
+              @click="router.push(`/problems/${item.problem_id}`)"
+            >
+              <div class="similar-title">
+                <el-tag size="small" :type="difficultyType(item.difficulty)" effect="plain">
+                  {{ item.difficulty }}
+                </el-tag>
+                <span>{{ item.title }}</span>
+              </div>
+              <div class="similar-reason">{{ item.reason }}</div>
+            </div>
+          </div>
         </el-card>
 
         <!-- 判题结果 -->
@@ -686,5 +743,33 @@ onBeforeUnmount(() => {
 
 .hint-list li {
   margin-bottom: 6px;
+}
+</style>
+<style scoped>
+.similar-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.similar-item {
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 6px;
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+.similar-item:hover {
+  border-color: var(--el-color-primary-light-5);
+}
+.similar-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+}
+.similar-reason {
+  font-size: 12px;
+  color: #909399;
+  margin-top: 4px;
 }
 </style>

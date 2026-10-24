@@ -26,7 +26,7 @@ python run.py                     # http://127.0.0.1:8000
 
 ```bash
 # 5. 验证
-python -m pytest                      # 312 项单元 + 集成测试
+python -m pytest                      # 335 项单元 + 集成测试
 python -m pytest --cov=app            # 覆盖率（CI 阈值 75%）
 python -m ruff check .                # 代码质量（0 告警）
 python scripts/judge_selftest.py      # 判题沙箱自测（本机可用语言全过，CI 全语言 14/14）
@@ -224,6 +224,20 @@ curl -X POST http://127.0.0.1:8000/api/agent/run \
 **硬约束**：模型只能在规则基线 ±12 分内修正，越界无条件夹回（`clamp_quality`）。
 否则模型可以把 6 层嵌套、全单字母变量的代码评成"优秀"，评分就失去区分度。
 
+### 相似题检索（举一反三，轻量 RAG 检索层）
+
+FTS5（trigram，中文子串）+ 标签 SQL 双路召回，混合排序（标签 Jaccard×2.0 +
+全文命中×0.6 − 难度差惩罚），每条结果带"为什么相似"的可解释理由；
+零外部服务（无向量库），索引惰性重建（行数/updated_at 漂移检测）。
+`GET /api/problems/{id}/similar`；题目详情页「举一反三」面板。
+
+### 对话式辅导（多轮陪跑 + 强度治理）
+
+与单发提示互补的会话式辅导：初始强度与 hint 同口径（按掌握度算定），
+用户要更多升一档（封顶 pseudocode）、想通了降回最弱档，任何档位不给
+完整代码；上下文预算可控（题面+记忆结论+近 10 轮裁剪）；SSE 流式，
+失败降级规则模板永不中断。见 `core/chat.py` 与「对话辅导」页。
+
 ### 打卡与学习报告
 
 - **日界按用户本地时区计算**（`User.timezone`）—— 否则东八区凌晨打卡会被算进前一天，连击莫名中断
@@ -324,6 +338,8 @@ START → judge → mastery ─┬─(有候选)→ recommend ─┬─(有标�
 | **多 Agent 统一基于 LangGraph 编排** | `core/graph.py`（StateGraph + 条件边 + reducer 状态合并） | `test_graph_conditional_*`、`test_graph_state_reducer_accumulates_all_nodes` |
 | **Redis**（限流/缓存/分布式锁） | `core/redis_client.py`、`middleware.py`、`core/cache.py`、`core/lock.py` | `test_rate_limiter_falls_back_to_local`、`test_lock_falls_back_to_local` |
 | 长链路后台任务 + 轮询 + 流式 + 中断 | `core/tasks.py`、`api/agent.py` | `test_pipeline_async_task_and_sse`、`test_pipeline_task_cancel` |
+| **轻量 RAG 检索层：同型题召回（举一反三）** | `core/similar.py`（FTS5 trigram + 标签双路召回 + 混合排序 + 可解释理由），零向量库依赖 | `tests/test_similar.py`（5 项：召回/排序/重建/API 契约） |
+| **多轮对话式辅导：上下文治理 + 强度升降档** | `core/chat.py` + `api/chat.py` + `ChatSession/ChatMessage`（19 表）：token 预算裁剪、规则降级、SSE | `tests/test_chat.py`（8 项：治理/属主/流式/上下文预算） |
 | **Agent 行为评估：改动有回归防线，不是"感觉变好了"** | `app/evals/`（11 场景 golden set + 规则断言 + Kendall tau 排序保真度）、`scripts/eval_agents.py` | mock 下全绿进 CI（`tests/test_evals.py`）；真模型抽检出 Markdown 报告，详见 `docs/2026-10-24-Agent行为评估与真模型全链路验证.md` |
 
 ## 架构

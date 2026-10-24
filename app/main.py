@@ -20,6 +20,7 @@ from .agents import AGENTS, validate_registry
 from .api import (
     admin,
     agent,
+    chat,
     data,
     mastery,
     operations,
@@ -158,6 +159,7 @@ for router in (
     operations.checkin_router,
     operations.rank_router,
     operations.notif_router,
+    chat.router,
     admin.router,
 ):
     app.include_router(router)

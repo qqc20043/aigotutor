@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 
 from ..core.memory import estimate_tokens, memory_block_for
 from ..core.pipeline import annotate_problem, generate_hint, route
+from ..core.similar import find_similar
 from ..deps import DbSession, ModelConfigDep, PageDep, UserDep
 from ..judge_service import (
     add_testcase,
@@ -170,6 +171,34 @@ async def problem_detail(problem_id: str, db: DbSession, user: UserDep):
         constraints=problem.constraints,
     )
     return ProblemDetail(**detail)
+
+
+@router.get("/{problem_id}/similar", response_model=dict)
+async def problem_similar(
+    problem_id: str, db: DbSession, user: UserDep, limit: int = Query(default=5, ge=1, le=10)
+):
+    """相似题检索（举一反三）：FTS5 召回 + 标签/难度混合排序。
+
+    检索层刻意零外部依赖（SQLite 内建 FTS5，trigram 分词适配中文子串），
+    LLM 重排是演进方向 —— 检索可解释性优先（每条结果带"为什么相似"）。
+    """
+    problem = await get_problem(db, problem_id)
+    if problem is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "题目不存在")
+    tag_map = await get_problem_tags(db, [problem.id])
+    source = {
+        "id": problem.id,
+        "title": problem.title,
+        "statement": problem.statement,
+        "tags": [t["name"] for t in tag_map.get(problem.id, [])],
+        "difficulty_score": problem.difficulty_score,
+    }
+    result = await find_similar(db, source, limit=limit)
+    return {
+        "problem_id": problem_id,
+        "items": [item.__dict__ for item in result["items"]],
+        "retrieval": result["retrieval"],
+    }
 
 
 @router.post("/{problem_id}/hint", response_model=dict)

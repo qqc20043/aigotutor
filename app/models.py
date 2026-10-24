@@ -469,3 +469,41 @@ class Notification(Base, TimestampMixin):
     # 跳转目标（前端路由，如 /problems/xxx）
     link: Mapped[str] = mapped_column(String(200), default="")
     read_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+
+
+# ---------------------------------------------------- 18 chat_sessions
+class ChatSession(Base, TimestampMixin):
+    """对话式辅导会话（多轮）：绑定题目（可选）+ 强度治理状态。
+
+    与单发 hint 的分工：hint 是"一次要一个提示"；会话是"陪跑到想明白"——
+    用户可以说"再点拨一下""我想到了你看看对不对"。上下文组装见 core/chat.py。
+    """
+
+    __tablename__ = "chat_sessions"
+    __table_args__ = (Index("ix_chat_sessions_user", "user_id", "updated_at"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    # 可空绑定题目：绑定时注入题面与该题掌握度，强度治理有依据
+    problem_id: Mapped[str] = mapped_column(String(32), default="", index=True)
+    title: Mapped[str] = mapped_column(String(200), default="")
+    # 当前提示强度档（direction/key_observation/pseudocode）：
+    # 由规则层算定与升降（用户明确要更多才升一档），模型无权改
+    strength: Mapped[str] = mapped_column(String(24), default="")
+    message_count: Mapped[int] = mapped_column(Integer, default=0)
+
+
+# ---------------------------------------------------- 19 chat_messages
+class ChatMessage(Base, TimestampMixin):
+    """会话内的一条消息（user / assistant）。"""
+
+    __tablename__ = "chat_messages"
+    __table_args__ = (Index("ix_chat_messages_session", "session_id", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    session_id: Mapped[str] = mapped_column(ForeignKey("chat_sessions.id", ondelete="CASCADE"))
+    role: Mapped[str] = mapped_column(String(16), nullable=False)  # user|assistant
+    content: Mapped[str] = mapped_column(Text, default="")
+    # assistant 消息携带：本次回复所处的强度档 / 是否规则降级
+    strength: Mapped[str] = mapped_column(String(24), default="")
+    degraded: Mapped[bool] = mapped_column(Boolean, default=False)

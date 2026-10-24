@@ -311,3 +311,22 @@ export interface StreamEvent {
   event: string
   data: Record<string, any>
 }
+
+/** 相似题（举一反三）：一条带可解释理由的推荐 */
+export interface SimilarProblem {
+  problem_id: string
+  title: string
+  difficulty: string
+  difficulty_score: number
+  tags: string[]
+  shared_tags: string[]
+  score: number
+  reason: string
+}
+
+/** 对话式辅导：SSE done 事件的载荷 */
+export interface ChatDoneData {
+  reply: string
+  strength: string
+  degraded: boolean
+}

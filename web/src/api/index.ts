@@ -17,6 +17,7 @@ import type {
   ReviewItem,
   ReviewMarkResult,
   RoadmapResult,
+  SimilarProblem,
   Submission,
   SubmissionDetail,
   SubmitResult,
@@ -104,6 +105,15 @@ export const problemApi = {
   hint: (id: string, params: { language?: string; current_code?: string } = {}) =>
     http
       .post<AgentRunResult & { memory_tokens?: number }>(`/problems/${id}/hint`, null, { params })
+      .then((r) => r.data),
+
+  /** 相似题（举一反三）：FTS5 召回 + 标签/难度混合排序，每条带"为什么相似" */
+  similar: (id: string, limit = 5) =>
+    http
+      .get<{ problem_id: string; items: SimilarProblem[]; retrieval: { rebuilt: boolean; rows: number; candidates: number } }>(
+        `/problems/${id}/similar`,
+        { params: { limit } },
+      )
       .then((r) => r.data),
 }
 
@@ -305,4 +315,46 @@ export const adminApi = {
     http.delete<Record<string, any>>(`/admin/problems/${id}`, { params: { confirm: true } }).then((r) => r.data),
   cleanup: () => http.post<Record<string, any>>('/admin/cleanup').then((r) => r.data),
   agents: (days = 7) => http.get<Record<string, any>>('/admin/agents', { params: { days } }).then((r) => r.data),
+}
+
+// ------------------------------------------------------------ ⑪ 对话式辅导
+export interface ChatMessageOut {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  strength: string
+  degraded: boolean
+  created_at: string
+}
+
+export interface ChatSessionOut {
+  id: string
+  problem_id: string
+  title: string
+  strength: string
+  message_count: number
+  created_at: string
+  updated_at: string
+}
+
+export const chatApi = {
+  createSession: (problem_id = '') =>
+    http.post<ChatSessionOut>('/chat/sessions', { problem_id }).then((r) => r.data),
+
+  sessions: (limit = 20) =>
+    http.get<{ items: ChatSessionOut[] }>('/chat/sessions', { params: { limit } }).then((r) => r.data),
+
+  detail: (id: string) =>
+    http.get<{ session: ChatSessionOut; messages: ChatMessageOut[] }>(`/chat/sessions/${id}`).then((r) => r.data),
+
+  remove: (id: string) => http.delete(`/chat/sessions/${id}`).then((r) => r.data),
+
+  /** 非流式发送（调试/兜底用；正常走 streamChat） */
+  send: (id: string, content: string) =>
+    http
+      .post<{ message: ChatMessageOut; strength: string; degraded: boolean }>(
+        `/chat/sessions/${id}/messages`,
+        { content },
+      )
+      .then((r) => r.data),
 }

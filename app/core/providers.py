@@ -63,6 +63,15 @@ class Provider(Protocol):
 
     def stream(self, system: str, user: str, model: str, **kw: Any) -> AsyncIterator[str]: ...
 
+    # 对话式（自由文本多轮，core/chat.py 使用；mock 由 chat 层短路不走这里）
+    async def complete_chat(
+        self, messages: list[dict[str, str]], model: str, **kw: Any
+    ) -> LLMResult: ...
+
+    def stream_chat(
+        self, messages: list[dict[str, str]], model: str, **kw: Any
+    ) -> AsyncIterator[str]: ...
+
 
 # --------------------------------------------------------------------- 工具
 def _approx_tokens(text: str) -> int:
@@ -658,6 +667,74 @@ class OpenAIProvider:
                 if delta:
                     yield delta
 
+    # ------------------------------------------------ 对话式（自由文本多轮）
+    # 与 complete/stream 的区别：无 response_format / tool_use 强结构 ——
+    # 对话辅导是自由文本，消息列表原样透传（core/chat.py 组装与裁剪）。
+    async def complete_chat(
+        self, messages: list[dict[str, str]], model: str = "gpt-4o-mini", **kw: Any
+    ) -> LLMResult:
+        started = time.perf_counter()
+        body = {
+            "model": model,
+            "messages": messages,
+            "temperature": kw.get("temperature", 0.3),
+            "max_tokens": kw.get("max_tokens", 2048),
+        }
+        async with httpx.AsyncClient(timeout=settings.LLM_TIMEOUT) as client:
+            try:
+                r = await client.post(
+                    f"{self.base_url}/chat/completions", json=body, headers=self._headers()
+                )
+            except httpx.TimeoutException as e:
+                raise LLMError("timeout", str(e)) from e
+            except httpx.HTTPError as e:
+                raise LLMError("network", str(e)) from e
+            if r.status_code == 401:
+                raise LLMError("auth", r.text, retryable=False)
+            if r.status_code == 429:
+                raise LLMError("rate_limit", r.text)
+            if r.status_code >= 400:
+                raise LLMError("provider", f"{r.status_code} {r.text[:200]}")
+            data = r.json()
+        usage = data.get("usage", {})
+        return LLMResult(
+            text=data["choices"][0]["message"]["content"],
+            prompt_tokens=usage.get("prompt_tokens", 0),
+            completion_tokens=usage.get("completion_tokens", 0),
+            latency_ms=int((time.perf_counter() - started) * 1000),
+            model=data.get("model", model),
+            provider=self.name,
+            raw=data,
+        )
+
+    async def stream_chat(
+        self, messages: list[dict[str, str]], model: str = "gpt-4o-mini", **kw: Any
+    ) -> AsyncIterator[str]:
+        body = {
+            "model": model,
+            "messages": messages,
+            "stream": True,
+            "temperature": kw.get("temperature", 0.3),
+        }
+        async with (
+            httpx.AsyncClient(timeout=settings.LLM_TIMEOUT) as client,
+            client.stream(
+                "POST", f"{self.base_url}/chat/completions", json=body, headers=self._headers()
+            ) as r,
+        ):
+            async for line in r.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                chunk = line[5:].strip()
+                if chunk == "[DONE]":
+                    break
+                try:
+                    delta = json.loads(chunk)["choices"][0]["delta"].get("content") or ""
+                except (json.JSONDecodeError, KeyError, IndexError):
+                    continue
+                if delta:
+                    yield delta
+
 
 # ---------------------------------------------------------------- Anthropic
 class AnthropicProvider:
@@ -739,6 +816,85 @@ class AnthropicProvider:
             "system": system,
             "messages": [{"role": "user", "content": user}],
             "stream": True,
+        }
+        async with (
+            httpx.AsyncClient(timeout=settings.LLM_TIMEOUT) as client,
+            client.stream(
+                "POST", f"{self.base_url}/messages", json=body, headers=self._headers()
+            ) as r,
+        ):
+            async for line in r.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                try:
+                    evt = json.loads(line[5:].strip())
+                except json.JSONDecodeError:
+                    continue
+                if evt.get("type") == "content_block_delta":
+                    delta = evt.get("delta", {}).get("text")
+                    if delta:
+                        yield delta
+
+    # ------------------------------------------------ 对话式（自由文本多轮）
+    @staticmethod
+    def _split_chat(messages: list[dict[str, str]]) -> tuple[str, list[dict[str, str]]]:
+        system = "\n\n".join(m["content"] for m in messages if m["role"] == "system")
+        rest = [m for m in messages if m["role"] != "system"]
+        return system, rest
+
+    async def complete_chat(
+        self, messages: list[dict[str, str]], model: str = "claude-3-5-haiku-latest", **kw: Any
+    ) -> LLMResult:
+        started = time.perf_counter()
+        system, rest = self._split_chat(messages)
+        body = {
+            "model": model,
+            "max_tokens": kw.get("max_tokens", 2048),
+            "system": system,
+            "messages": rest,
+            "temperature": kw.get("temperature", 0.3),
+        }
+        async with httpx.AsyncClient(timeout=settings.LLM_TIMEOUT) as client:
+            try:
+                r = await client.post(
+                    f"{self.base_url}/messages", json=body, headers=self._headers()
+                )
+            except httpx.TimeoutException as e:
+                raise LLMError("timeout", str(e)) from e
+            except httpx.HTTPError as e:
+                raise LLMError("network", str(e)) from e
+            if r.status_code in (401, 403):
+                raise LLMError("auth", r.text, retryable=False)
+            if r.status_code == 429:
+                raise LLMError("rate_limit", r.text)
+            if r.status_code >= 400:
+                raise LLMError("provider", f"{r.status_code} {r.text[:200]}")
+            data = r.json()
+        text = "".join(
+            b.get("text", "") for b in data.get("content", []) if b.get("type") == "text"
+        )
+        usage = data.get("usage", {})
+        return LLMResult(
+            text=text,
+            prompt_tokens=usage.get("input_tokens", 0),
+            completion_tokens=usage.get("output_tokens", 0),
+            latency_ms=int((time.perf_counter() - started) * 1000),
+            model=data.get("model", model),
+            provider=self.name,
+            raw=data,
+        )
+
+    async def stream_chat(
+        self, messages: list[dict[str, str]], model: str = "claude-3-5-haiku-latest", **kw: Any
+    ) -> AsyncIterator[str]:
+        system, rest = self._split_chat(messages)
+        body = {
+            "model": model,
+            "max_tokens": kw.get("max_tokens", 2048),
+            "system": system,
+            "messages": rest,
+            "stream": True,
+            "temperature": kw.get("temperature", 0.3),
         }
         async with (
             httpx.AsyncClient(timeout=settings.LLM_TIMEOUT) as client,
@@ -844,6 +1000,87 @@ class GeminiProvider:
             "systemInstruction": {"parts": [{"text": system}]},
             "contents": [{"role": "user", "parts": [{"text": user}]}],
         }
+        url = f"{self.base_url}/models/{model}:streamGenerateContent?alt=sse&key={self.api_key}"
+        async with (
+            httpx.AsyncClient(timeout=settings.LLM_TIMEOUT) as client,
+            client.stream("POST", url, json=body) as r,
+        ):
+            async for line in r.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                try:
+                    evt = json.loads(line[5:].strip())
+                    text = evt["candidates"][0]["content"]["parts"][0]["text"]
+                except (json.JSONDecodeError, KeyError, IndexError):
+                    continue
+                if text:
+                    yield text
+
+    # ------------------------------------------------ 对话式（自由文本多轮）
+    @staticmethod
+    def _chat_contents(messages: list[dict[str, str]]) -> tuple[str, list[dict[str, Any]]]:
+        system = "\n\n".join(m["content"] for m in messages if m["role"] == "system")
+        contents = [
+            {
+                "role": "model" if m["role"] == "assistant" else "user",
+                "parts": [{"text": m["content"]}],
+            }
+            for m in messages
+            if m["role"] != "system"
+        ]
+        return system, contents
+
+    async def complete_chat(
+        self, messages: list[dict[str, str]], model: str = "gemini-2.0-flash", **kw: Any
+    ) -> LLMResult:
+        started = time.perf_counter()
+        system, contents = self._chat_contents(messages)
+        body: dict[str, Any] = {
+            "contents": contents,
+            "generationConfig": {"temperature": kw.get("temperature", 0.3)},
+        }
+        if system:
+            body["systemInstruction"] = {"parts": [{"text": system}]}
+        url = f"{self.base_url}/models/{model}:generateContent?key={self.api_key}"
+        async with httpx.AsyncClient(timeout=settings.LLM_TIMEOUT) as client:
+            try:
+                r = await client.post(url, json=body)
+            except httpx.TimeoutException as e:
+                raise LLMError("timeout", str(e)) from e
+            except httpx.HTTPError as e:
+                raise LLMError("network", str(e)) from e
+            if r.status_code in (401, 403):
+                raise LLMError("auth", r.text, retryable=False)
+            if r.status_code == 429:
+                raise LLMError("rate_limit", r.text)
+            if r.status_code >= 400:
+                raise LLMError("provider", f"{r.status_code} {r.text[:200]}")
+            data = r.json()
+        try:
+            text = data["candidates"][0]["content"]["parts"][0]["text"]
+        except (KeyError, IndexError) as e:
+            raise LLMError("provider", f"响应缺少内容: {str(data)[:200]}") from e
+        usage = data.get("usageMetadata", {})
+        return LLMResult(
+            text=text,
+            prompt_tokens=usage.get("promptTokenCount", 0),
+            completion_tokens=usage.get("candidatesTokenCount", 0),
+            latency_ms=int((time.perf_counter() - started) * 1000),
+            model=data.get("modelVersion", model),
+            provider=self.name,
+            raw=data,
+        )
+
+    async def stream_chat(
+        self, messages: list[dict[str, str]], model: str = "gemini-2.0-flash", **kw: Any
+    ) -> AsyncIterator[str]:
+        system, contents = self._chat_contents(messages)
+        body: dict[str, Any] = {
+            "contents": contents,
+            "generationConfig": {"temperature": kw.get("temperature", 0.3)},
+        }
+        if system:
+            body["systemInstruction"] = {"parts": [{"text": system}]}
         url = f"{self.base_url}/models/{model}:streamGenerateContent?alt=sse&key={self.api_key}"
         async with (
             httpx.AsyncClient(timeout=settings.LLM_TIMEOUT) as client,
