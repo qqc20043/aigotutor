@@ -370,6 +370,7 @@ export interface InterviewSessionOut {
   status: string
   hint_requests: number
   submission_ids: string[]
+  elapsed_seconds: number
   created_at: string
 }
 

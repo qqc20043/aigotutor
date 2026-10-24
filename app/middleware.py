@@ -42,6 +42,8 @@ RATE_GROUPS: dict[str, int | None] = {
     "/api/agent/pipeline": 15,
     # 对话辅导：每条消息一次 LLM 调用（会话 CRUD 低频，同组不影响）
     "/api/chat/sessions/": 30,
+    # 模拟面试：message 是 LLM 调用，submit 是沙箱判题，同组收敛
+    "/api/interview/": 30,
     "/api/submissions": 60,
     "/api/submissions/": 60,
     # 判题：CPU 密集

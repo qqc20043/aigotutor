@@ -997,11 +997,62 @@ async def reconcile_tasks() -> int:
 
 # ================================================================ 数据导入导出
 async def export_user_data(db: AsyncSession, user_id: str) -> dict[str, Any]:
+    from .models import ChatMessage, ChatSession, InterviewReport
+
     mastery = await get_mastery(db, user_id)
     wrongs = await list_wrong_book(db, user_id, limit=500)
     queue = await get_review_queue(db, user_id, limit=500)
     timeline = await state_timeline(db, user_id, limit=100)
     subs, _ = await list_submissions(db, user_id=user_id, limit=500)
+
+    chat_rows = (
+        (
+            await db.execute(
+                select(ChatSession)
+                .where(ChatSession.user_id == user_id)
+                .order_by(ChatSession.created_at)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    chats = []
+    for cs in chat_rows:
+        msgs = (
+            (
+                await db.execute(
+                    select(ChatMessage)
+                    .where(ChatMessage.session_id == cs.id)
+                    .order_by(ChatMessage.created_at)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        chats.append(
+            {
+                "id": cs.id,
+                "kind": cs.kind,
+                "title": cs.title,
+                "problem_id": cs.problem_id,
+                "messages": [
+                    {"role": m.role, "content": m.content, "created_at": _aware(m.created_at)}
+                    for m in msgs
+                ],
+            }
+        )
+    reports = (
+        (
+            await db.execute(
+                select(InterviewReport)
+                .where(InterviewReport.user_id == user_id)
+                .order_by(InterviewReport.created_at)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
     return {
         "user_id": user_id,
         "exported_at": _now().isoformat(),
@@ -1009,6 +1060,17 @@ async def export_user_data(db: AsyncSession, user_id: str) -> dict[str, Any]:
         "wrong_book": wrongs,
         "review_queue": queue,
         "state_timeline": timeline,
+        "chats": chats,
+        "interview_reports": [
+            {
+                "session_id": r.session_id,
+                "problem_id": r.problem_id,
+                "verdict": r.verdict,
+                "scores": json.loads(r.scores or "{}"),
+                "narrative": r.narrative,
+            }
+            for r in reports
+        ],
         "submissions": [
             {
                 "id": s.id,

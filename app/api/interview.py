@@ -60,6 +60,7 @@ def _session_out(s: ChatSession, meta: dict) -> dict:
         "status": meta.get("status", "ongoing"),
         "hint_requests": meta.get("hint_requests", 0),
         "submission_ids": meta.get("submission_ids", []),
+        "elapsed_seconds": round(elapsed_seconds_of(meta), 1),
         "created_at": s.created_at.isoformat(),
     }
 
@@ -186,6 +187,21 @@ async def interview_message(
         await memory_block_for(db, user.id),
         [ChatTurn(role=m.role, content=m.content) for m in reversed(history_rows)],
     )
+    # 考官必须知道判题事实才能有效追问（此前只存 meta 不进上下文，
+    # 考官对 WA/AC 一无所知，追问只能盲猜）
+    sub_ids = meta.get("submission_ids") or []
+    if sub_ids:
+        from ..models import Submission
+
+        facts = []
+        for i, sub_id in enumerate(sub_ids[-3:], 1):
+            sub = await db.get(Submission, sub_id)
+            if sub is not None:
+                facts.append(
+                    f"第 {i} 次提交：{sub.verdict}（{sub.passed_cases}/{sub.total_cases}，"
+                    f"{sub.language}）"
+                )
+        ctx.extra = "最近判题：" + "；".join(facts)
 
     messages = interview_messages(ctx, body.content, s.strength)
     from ..core.chat import STRENGTH_ORDER, rule_reply
@@ -259,6 +275,11 @@ async def submit_code(
     meta = _meta_of(s)
     if meta.get("status") != "ongoing":
         raise HTTPException(status.HTTP_409_CONFLICT, "本场面试已结束")
+    # 与 message 同一道时间门：到时后不得再交代码刷正确性分
+    if s.time_limit_minutes > 0 and elapsed_seconds_of(meta) >= s.time_limit_minutes * 60:
+        meta["status"] = "time_up"
+        await _save_meta(db, s, meta)
+        raise HTTPException(status.HTTP_409_CONFLICT, "已到时限，请调用 finish 生成报告")
     problem = await get_problem(db, s.problem_id)
     if problem is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "题目不存在")

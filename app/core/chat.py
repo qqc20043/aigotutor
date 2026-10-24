@@ -73,6 +73,8 @@ class CoachContext:
     mastery_score: float = 50.0
     attempts: int = 0
     history: list[ChatTurn] = field(default_factory=list)
+    # 调用方自定义的附加背景块（如面试官需要的"最近提交结果"），独立 system 块注入
+    extra: str = ""
 
 
 @dataclass

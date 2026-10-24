@@ -183,6 +183,8 @@ def interview_messages(ctx: CoachContext, user_message: str, strength: str) -> l
 
 def _ctx_system_blocks(ctx: CoachContext) -> list[dict[str, str]]:
     blocks = []
+    if ctx.extra:
+        blocks.append("【本场面试进行中的事实（可据此追问）】\n" + ctx.extra)
     if ctx.problem:
         tags = "、".join(str(t) for t in (ctx.problem.get("tags") or []))
         blocks.append(
@@ -220,7 +222,7 @@ def narrative_fallback(scores: dict[str, Any], verdict: str) -> str:
     return "\n".join(lines)
 
 
-_HINT_MARK = re.compile(r"^\s*[（(]提示[)）]")
+_HINT_MARK = re.compile(r"[（(]提示[)）]")
 
 
 async def generate_narrative(
@@ -264,8 +266,12 @@ async def generate_narrative(
 
 
 def hint_request_flag(reply_text: str) -> bool:
-    """考官回复是否携带了提示（以「(提示)」标记为准，便于统计口径稳定）。"""
-    return bool(_HINT_MARK.match(reply_text or ""))
+    """考官回复是否携带了提示（以「(提示)」标记为准，便于统计口径稳定）。
+
+    用全文搜索而不是锚定开头：模型不保证把标记放在句首，漏记会让
+    提示依赖分虚高。
+    """
+    return bool(_HINT_MARK.search(reply_text or ""))
 
 
 def elapsed_seconds_of(meta: dict[str, Any]) -> float:

@@ -76,7 +76,8 @@ async function resume(s: InterviewSessionOut) {
   current.value = s
   messages.value = detail.messages
   phase.value = 'live'
-  elapsed.value = 0
+  // 恢复服务端真实用时（meta.started_at 起算），否则倒计时失真
+  elapsed.value = Math.round(detail.session.elapsed_seconds || 0)
   startTimer()
 }
 
@@ -84,6 +85,13 @@ function startTimer() {
   stopTimer()
   timer = window.setInterval(() => {
     elapsed.value += 1
+    if (current.value && current.value.time_limit_minutes > 0
+        && elapsed.value >= current.value.time_limit_minutes * 60) {
+      stopTimer()
+      ElMessageBox.confirm('已到时限，结束本场面试并生成报告？', '时间到', { type: 'warning' })
+        .then(() => finish(true))
+        .catch(() => undefined)
+    }
   }, 1000)
 }
 
@@ -92,6 +100,12 @@ function stopTimer() {
     window.clearInterval(timer)
     timer = null
   }
+}
+
+// 中文输入法组词/选词的 Enter 不是"发送"（与 ChatView 同一守卫）
+function onEnter(e?: KeyboardEvent) {
+  if (e?.isComposing || e?.keyCode === 229) return
+  void send(false)
 }
 
 async function send(askHint = false) {
@@ -158,16 +172,6 @@ async function openReport(s: InterviewSessionOut) {
   phase.value = 'report'
 }
 
-async function maybeTimeUp() {
-  if (phase.value !== 'live' || !current.value) return
-  if (current.value.time_limit_minutes > 0 && elapsed.value >= current.value.time_limit_minutes * 60) {
-    stopTimer()
-    ElMessageBox.confirm('已到时限，结束本场面试并生成报告？', '时间到', { type: 'warning' })
-      .then(() => finish(true))
-      .catch(() => undefined)
-  }
-}
-
 onMounted(() => {
   void loadLobby()
 })
@@ -232,7 +236,7 @@ export default { name: 'InterviewView' }
         </el-tag>
         <el-tag size="small" effect="plain">提示 {{ current.hint_requests }} 次</el-tag>
         <div class="flex-spacer" />
-        <el-button @click="maybeTimeUp(); finish(true)">结束并出报告</el-button>
+        <el-button @click="finish(true)">结束并出报告</el-button>
       </div>
 
       <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px">
@@ -250,7 +254,7 @@ export default { name: 'InterviewView' }
               type="textarea"
               :rows="2"
               placeholder="向考官陈述思路（Enter 发送）"
-              @keydown.enter.exact.prevent="send($event)"
+              @keydown.enter.exact.prevent="onEnter($event)"
             />
             <el-button type="primary" :loading="sending" @click="send(false)">发送</el-button>
             <el-button :loading="sending" @click="send(true)">要提示</el-button>

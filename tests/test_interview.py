@@ -17,6 +17,7 @@ from app.core.interview import (
     score_hint_dependency,
     score_time_efficiency,
 )
+from app.db import session_scope
 
 
 # ==================================================== 评分纯函数
@@ -245,3 +246,77 @@ async def test_real_sandbox_ac_scores_full_correctness(iv_user):
     assert r.json()["verdict"] == "AC"
     r = await client.post(f"/api/interview/{sid}/finish", headers=H)
     assert r.json()["scores"]["correctness"] == 100.0
+
+
+# ==================================================== 深度测评回归（2026-10-24 第二轮）
+async def test_submit_after_deadline_rejected(iv_user):
+    """到时后不得再交代码刷正确性分（此前 submit 没有时间门，message 有）。"""
+    client, token = iv_user
+    H = {"Authorization": f"Bearer {token}"}
+    pid = await _problem(client, token)
+    sid = (
+        await client.post(
+            "/api/interview/start",
+            json={"problem_id": pid, "time_limit_minutes": 5},
+            headers=H,
+        )
+    ).json()["id"]
+    # 直接回拨 started_at 到 10 分钟前（比 5 分钟时限早）
+    import json as _json
+    import time as _time
+
+    from app.models import ChatSession
+
+    async with session_scope() as db:
+        s = await db.get(ChatSession, sid)
+        meta = _json.loads(s.meta)
+        meta["started_at"] = _time.time() - 600
+        s.meta = _json.dumps(meta)
+    r = await client.post(
+        f"/api/interview/{sid}/submit",
+        json={"language": "python", "code": "print(1)"},
+        headers=H,
+    )
+    assert r.status_code == 409, "超时后提交必须被拒"
+    assert "时限" in r.json()["detail"]
+
+    # 到时后的 message 同样 409（既有行为，顺带钉死）
+    r = await client.post(f"/api/interview/{sid}/message", json={"content": "还有吗"}, headers=H)
+    assert r.status_code == 409
+
+
+def test_hint_flag_matches_anywhere():
+    """模型不保证把 (提示) 放句首 —— 全文匹配（match->search）。"""
+    assert hint_request_flag("好的。（提示）先想想重复元素")
+    assert hint_request_flag("（提示）注意空输入")
+    assert not hint_request_flag("先说说你的思路")
+
+
+def test_examiner_context_includes_submissions():
+    """考官上下文必须携带最近判题事实（此前考官对 WA/AC 一无所知）。"""
+    from app.core.chat import CoachContext
+
+    ctx = CoachContext(
+        problem={"title": "T", "statement": "S", "tags": ["模拟"], "difficulty": "入门"},
+        extra="最近判题：第 1 次提交：WA（0/2，python）",
+    )
+    msgs = interview_messages(ctx, "我觉得没问题了", "direction")
+    joined = "\n".join(m["content"] for m in msgs)
+    assert "WA（0/2" in joined, "考官必须能看到判题事实"
+
+
+async def test_export_includes_chats_and_reports(iv_user):
+    """数据导出必须覆盖新表（chats/interview_reports），否则\"全部学习数据\"是假的。"""
+    client, token = iv_user
+    H = {"Authorization": f"Bearer {token}"}
+    pid = await _problem(client, token)
+    sid = (await client.post("/api/interview/start", json={"problem_id": pid}, headers=H)).json()[
+        "id"
+    ]
+    await client.post(f"/api/interview/{sid}/finish", headers=H)
+    r = await client.get("/api/data/export", headers=H)
+    assert r.status_code == 200
+    body = r.json()
+    assert "chats" in body and "interview_reports" in body
+    assert any(c["kind"] == "interview" for c in body["chats"])
+    assert body["interview_reports"], "报告必须被导出"
