@@ -183,9 +183,27 @@ async def global_stats():
 # 必须放在所有 API 路由之后：否则会抢占 /api 路径。
 # 前端用 hash 路由（#/xxx），因此不需要 SPA history 回退规则，
 # 只要把 index.html 与 assets 提供给根路径即可。
+class SPAStaticFiles(StaticFiles):
+    """SPA 静态托管：HTML 永不缓存，带内容 hash 的资源可长缓存。
+
+    真实故障（2026-10-24 实测复现）：重建 dist 后浏览器仍在用缓存的旧
+    index.html + 旧入口 JS —— 登录 API 能调通（toast 弹出），但路由按需
+    加载的页面 chunk 请求旧 hash 文件名 → 404 → 动态 import 失败 →
+    导航静默中止，用户表现为"登录成功但没跳转"。
+    修法是标准 SPA 部署惯例：index.html 发 no-cache（每次向服务器校验），
+    assets 文件名本身带 hash、内容不变即可放心缓存。
+    """
+
+    def file_response(self, full_path, stat_result, scope, status_code=200):
+        resp = super().file_response(full_path, stat_result, scope, status_code=status_code)
+        if str(full_path).endswith(".html"):
+            resp.headers["Cache-Control"] = "no-cache"
+        return resp
+
+
 _web_dist = settings.WEB_DIST
 if settings.SERVE_FRONTEND and _web_dist.is_dir() and (_web_dist / "index.html").exists():
-    app.mount("/", StaticFiles(directory=str(_web_dist), html=True), name="web")
+    app.mount("/", SPAStaticFiles(directory=str(_web_dist), html=True), name="web")
     logger.info("前端静态托管已启用：%s", _web_dist)
 else:
 

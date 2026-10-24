@@ -251,3 +251,12 @@ async def test_metrics_rejects_non_loopback_without_token(client, monkeypatch):
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
         r = await c.get("/metrics")
     assert r.status_code == 404, "外网来源在未配置 token 时不得抓取 /metrics"
+
+
+# ==================================================== SPA 缓存策略
+async def test_spa_html_not_cached(client):
+    """index.html 必须发 no-cache（重建 dist 后旧缓存会导致页面 chunk 404，
+    登录成功但路由跳转静默失败——2026-10-24 实测复现）。"""
+    r = await client.get("/")
+    assert r.status_code == 200
+    assert r.headers.get("cache-control") == "no-cache"
