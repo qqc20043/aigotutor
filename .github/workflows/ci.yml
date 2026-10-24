@@ -42,6 +42,20 @@ jobs:
   test:
     name: 测试与覆盖率（Python ${{ matrix.python-version }}）
     runs-on: ubuntu-latest
+    # task_store 的跨进程镜像用例刻意用真实 Redis（mock 存储层等于没测），
+    # 无 Redis 时按设计跳过 —— 上一轮 CI 跳过 10 个恰好让总覆盖率跌破 75%
+    # 门禁（实测 74.38%）。给本 job 挂一个 Redis 服务让它们真实执行；
+    # 降级路径的用例各自显式 monkeypatch 掉 REDIS_URL，不受影响。
+    services:
+      redis:
+        image: redis:6
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     strategy:
       fail-fast: false
       matrix:

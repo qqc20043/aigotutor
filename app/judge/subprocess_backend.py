@@ -91,8 +91,10 @@ def _looks_like_memory_error(stderr: str) -> bool:
       C++     std::bad_alloc / terminate called after throwing
       Java    java.lang.OutOfMemoryError
 
-    只在 Unix 且设了内存上限时使用（见 _run_case）。匹配不到就按普通 RE 处理 ——
-    宁可漏判成 RE，也不能把真正的运行时错误误报为 MLE。
+    两种平台都要用：Unix 上是 RLIMIT_AS 的"分配即失败"退出；Windows 上
+    进程会自己抛 MemoryError/OutOfMemoryError 退出（采样监控只负责
+    "换页拖死被 kill"的情形）。匹配不到就按普通 RE 处理 —— 宁可漏判成 RE，
+    也不能把真正的运行时错误误报为 MLE。
     """
     if not stderr:
         return False
@@ -255,6 +257,11 @@ class SubprocessBackend(JudgeBackend):
             for part in spec["run"]
         ]
         run_cmd = self._resolve_cmd(run_cmd)
+        if req.language == "java" and req.memory_limit_mb > 0:
+            # JVM 与 RLIMIT_AS 天生不兼容（见 _run_process_with_resources 的
+            # _limits 说明），内存上限改由 -Xmx 交给 JVM 自己执行；
+            # RSS 采样监控仍作兜底。
+            run_cmd.insert(1, f"-Xmx{req.memory_limit_mb}m")
 
         case_results: list[CaseResult] = []
         passed = 0
@@ -300,7 +307,7 @@ class SubprocessBackend(JudgeBackend):
         mem_limit_mb = req.memory_limit_mb or settings.JUDGE_MEMORY_MB
         started = time.perf_counter()
         code, out, err, peak_kb = await self._run_process_with_resources(
-            cmd, workdir, case.input_data, timeout, mem_limit_mb
+            cmd, workdir, case.input_data, timeout, mem_limit_mb, language=req.language
         )
         elapsed_ms = int((time.perf_counter() - started) * 1000)
 
@@ -334,12 +341,12 @@ class SubprocessBackend(JudgeBackend):
                 message="输出过大",
             )
         if code != 0:
-            # Unix 的 RLIMIT_AS 是"分配即失败"语义：超限时进程不是被外部杀掉，
-            # 而是自己因 MemoryError 崩溃退出（非零码 + 特定 stderr）。
-            # 若不识别这个模式就会误判成 RE —— 用户明明写的是内存超限的代码，
-            # 却被告知"运行时错误"，完全误导。Windows 上则由采样监控器主动 kill
-            # （code == -11），已在上面判过。
-            if IS_UNIX and mem_limit_mb > 0 and _looks_like_memory_error(err):
+            # 内存分配失败有两种表征：Unix 上 RLIMIT_AS 是"分配即失败"语义，
+            # 进程自己因 MemoryError 异常退出；Windows 上进程会自己抛
+            # MemoryError/OutOfMemoryError 退出（采样监控器只负责"换页拖死
+            # 被 kill"的情形，已在上面判过）。两种平台都必须按 MLE 判 ——
+            # 用户明明写的是内存超限的代码，却被告知"运行时错误"完全误导。
+            if mem_limit_mb > 0 and _looks_like_memory_error(err):
                 return CaseResult(
                     case_id=case_id,
                     verdict="MLE",
@@ -391,6 +398,7 @@ class SubprocessBackend(JudgeBackend):
         input_data: str,
         timeout: float,
         mem_limit_mb: int,
+        language: str = "",
     ) -> tuple[int, str, str, int]:
         """执行命令，返回 (退出码, stdout, stderr, 峰值内存KB)。
 
@@ -398,6 +406,10 @@ class SubprocessBackend(JudgeBackend):
           * Unix: setrlimit(RLIMIT_AS) 由内核强制，分配失败即异常退出；
           * Windows: 无等价 API，靠后台采样监控 —— 一旦超限立刻 kill，
             否则进程会陷入疯狂换页，最后撞上超时被误判为 TLE（实测踩到过）。
+        例外：java 两边都不走内核限制 —— JVM 启动时要一次性保留最大堆的
+        虚拟地址空间（默认 ≈ 物理内存 1/4），RLIMIT_AS 会直接把 JVM 掐死在
+        启动阶段（CI 实测 7ms 判 RE）；其内存上限由 -Xmx（见 _judge_in）+
+        RSS 采样监控承担。
         """
         limit = settings.JUDGE_OUTPUT_LIMIT
 
@@ -407,11 +419,16 @@ class SubprocessBackend(JudgeBackend):
             try:
                 import resource
 
-                bytes_limit = mem_limit_mb * 1024 * 1024
-                resource.setrlimit(resource.RLIMIT_AS, (bytes_limit, bytes_limit))
+                # java 跳过 AS/NPROC：JVM 启动要保留数 GB 虚拟地址空间（远超
+                # 内存上限），GC/JIT 线程组也会撞 NPROC，见上方 docstring。
+                enforce_rlimits = language != "java"
+                if enforce_rlimits:
+                    bytes_limit = mem_limit_mb * 1024 * 1024
+                    resource.setrlimit(resource.RLIMIT_AS, (bytes_limit, bytes_limit))
                 cpu = int(max(1.0, timeout)) + 1
                 resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu))
-                resource.setrlimit(resource.RLIMIT_NPROC, (64, 64))
+                if enforce_rlimits:
+                    resource.setrlimit(resource.RLIMIT_NPROC, (64, 64))
                 resource.setrlimit(resource.RLIMIT_FSIZE, (limit, limit))
             except (ValueError, OSError, ImportError):
                 pass

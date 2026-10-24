@@ -45,6 +45,16 @@ public class Main {
 }
 """
 JA_CE = "public class Main { public static void main(String[] a) { int x = ; } }"
+# -Xmx 由判题后端按 memory_limit_mb 注入（512MB 堆装不下 4GB 数组），
+# JVM 会抛 OutOfMemoryError 退出 —— 用于验证 java 的内存上限真实生效。
+JA_MLE = """import java.util.*;
+public class Main {
+    public static void main(String[] args) {
+        int[] big = new int[Integer.MAX_VALUE / 2];
+        System.out.println(big.length);
+    }
+}
+"""
 
 CPP_AC = """#include <iostream>
 int main() {
@@ -88,6 +98,7 @@ SCENARIOS: dict[str, list[tuple[str, str, str, int, int]]] = {
     "java": [
         ("AC  正确实现", JA_AC, "AC", 3000, 512),
         ("WA  错误实现", JA_WA, "WA", 3000, 512),
+        ("MLE 超内存", JA_MLE, "MLE", 3000, 512),
         ("CE  语法错误", JA_CE, "CE", 3000, 512),
     ],
     "cpp": [
