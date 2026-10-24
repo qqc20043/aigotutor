@@ -24,7 +24,7 @@ import itertools
 import json
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 
 LEECH_LAPSES_THRESHOLD = 3
 LEECH_MASTERY_BELOW = 40.0
@@ -106,12 +106,28 @@ async def find_leeches(
     from ..services import get_problem_tags, mastery_scores_map
 
     pids = list(merged)
+    # 搁置状态统一从 review_queue 真值回填：wrong-book 路进来的条目
+    # （只连错、lapses 未达标的顽固卡）不该显示默认的"调度中"——
+    # 它可能已被搁置（suspend API 会为无队列记录的顽固卡补建条目）。
+    suspended_map: dict[str, bool] = {}
+    sus_rows = (
+        await db.execute(
+            text(
+                "SELECT problem_id, suspended FROM review_queue "
+                "WHERE user_id = :uid AND problem_id IN :ids"
+            ).bindparams(bindparam("ids", expanding=True)),
+            {"uid": user_id, "ids": pids},
+        )
+    ).fetchall()
+    for spid, sflag in sus_rows:
+        suspended_map[spid] = bool(sflag)
     tag_map = await get_problem_tags(db, pids)
     mastery = await mastery_scores_map(db, user_id)
 
     items: list[dict[str, Any]] = []
     for pid in pids:
         item = merged[pid]
+        item["suspended"] = suspended_map.get(pid, False)
         tags = [t["name"] for t in tag_map.get(pid, [])]
         weakest = min((float(mastery.get(t, 50.0)) for t in tags), default=50.0)
         item["tags"] = tags

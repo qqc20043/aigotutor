@@ -67,10 +67,13 @@ async def suspend_leech(problem_id: str, body: SuspendIn, db: DbSession, user: U
 
     搁置：移出每日队列与混排（雷达仍可见），适合"先修复别的，回头再来"；
     恢复：回到正常调度。标记掌握时也会自动恢复（见 mastery 接口）。
+    无 FSRS 记录的顽固卡（只连错、从未复习）会补建一条搁置记录——
+    否则这类题无法搁置，且它本来就该有调度条目（重做后要 FSRS 跟踪）。
     """
     from sqlalchemy import update
 
     from ..models import ReviewQueue
+    from ..services import upsert_review_item
 
     result = await db.execute(
         update(ReviewQueue)
@@ -78,7 +81,15 @@ async def suspend_leech(problem_id: str, body: SuspendIn, db: DbSession, user: U
         .values(suspended=body.suspended)
     )
     if result.rowcount == 0:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "该题没有复习记录")
+        if not body.suspended:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "该题没有复习记录，无需恢复")
+        # 补建一条已搁置的调度条目（rating=4 的中性初始化，不制造遗忘事实）
+        await upsert_review_item(db, user.id, problem_id, 4)
+        await db.execute(
+            update(ReviewQueue)
+            .where(ReviewQueue.user_id == user.id, ReviewQueue.problem_id == problem_id)
+            .values(suspended=True)
+        )
     return {"ok": True, "problem_id": problem_id, "suspended": body.suspended}
 
 

@@ -278,3 +278,82 @@ async def test_interleaved_tags_filter(pr_user):
     body = r.json()
     assert body["items"]
     assert all("贪心" in i["tags"] for i in body["items"])
+
+
+# ==================================================== 交叉审查回归（第三轮）
+async def test_suspend_creates_record_for_wrongbook_only_leech(pr_user):
+    """只连错、从未复习的顽固卡：搁置时补建调度条目（修复前 404 无法搁置）。"""
+    client, token, uid = pr_user
+    H = {"Authorization": f"Bearer {token}"}
+    pid = await _make_problem("纯错题顽固卡", ["贪心"])
+    from app.services import upsert_wrong_book
+
+    async with session_scope() as db:
+        await upsert_wrong_book(db, uid, pid, "WA")
+        await upsert_wrong_book(db, uid, pid, "WA")
+        await upsert_wrong_book(db, uid, pid, "TLE")
+
+    r = await client.post(f"/api/practice/leech/{pid}/suspend", json={"suspended": True}, headers=H)
+    assert r.status_code == 200, r.text
+
+    # 补建的条目必须是搁置态（不进队列、雷达可见）
+    from app.services import get_review_queue
+
+    async with session_scope() as db:
+        q = await get_review_queue(db, uid, include_suspended=True, limit=50)
+        row = next(i for i in q if i["problem_id"] == pid)
+        assert row["suspended"] is True
+    radar = (await client.get("/api/practice/leech", headers=H)).json()
+    item = next(i for i in radar["items"] if i["problem_id"] == pid)
+    assert item["suspended"] is True
+
+    # 恢复：无队列记录的恢复仍 404（语义诚实）
+    r = await client.post(
+        f"/api/practice/leech/{pid}/suspend", json={"suspended": False}, headers=H
+    )
+    assert r.status_code == 200, "补建过条目后恢复应成功"
+    r = await client.post(
+        f"/api/practice/leech/{pid}/suspend", json={"suspended": False}, headers=H
+    )
+    assert r.status_code == 200  # 已是 False，幂等
+
+
+async def test_mark_rating3_restores_suspended(pr_user):
+    """搁置卡手动重做自评"记得"（rating>=3）→ 自动恢复调度。"""
+    client, token, uid = pr_user
+    H = {"Authorization": f"Bearer {token}"}
+    pid = await _make_problem("重做恢复题", ["二分"])
+    async with session_scope() as db:
+        for _ in range(4):
+            await upsert_review_item(db, uid, pid, 1)
+    await client.post(f"/api/practice/leech/{pid}/suspend", json={"suspended": True}, headers=H)
+
+    r = await client.post("/api/review/mark", json={"problem_id": pid, "rating": 4}, headers=H)
+    assert r.status_code == 200
+    from app.services import get_review_queue
+
+    async with session_scope() as db:
+        q = await get_review_queue(db, uid, due_only=False, limit=50)
+        assert any(i["problem_id"] == pid for i in q), "rating>=3 必须自动恢复"
+
+    # rating=1 保持搁置
+    await client.post(f"/api/practice/leech/{pid}/suspend", json={"suspended": True}, headers=H)
+    await client.post("/api/review/mark", json={"problem_id": pid, "rating": 1}, headers=H)
+    async with session_scope() as db:
+        q2 = await get_review_queue(db, uid, due_only=False, limit=50)
+        assert not any(i["problem_id"] == pid for i in q2), "rating=1 保持搁置"
+
+
+async def test_export_includes_suspended(pr_user):
+    """导出全部学习数据必须含搁置卡（迁移不丢数据）。"""
+    client, token, uid = pr_user
+    H = {"Authorization": f"Bearer {token}"}
+    pid = await _make_problem("导出搁置题", ["模拟"])
+    async with session_scope() as db:
+        for _ in range(3):
+            await upsert_review_item(db, uid, pid, 2)
+    await client.post(f"/api/practice/leech/{pid}/suspend", json={"suspended": True}, headers=H)
+
+    body = (await client.get("/api/data/export", headers=H)).json()
+    exported = {i["problem_id"]: i for i in body["review_queue"]}
+    assert pid in exported, "搁置卡必须在导出里"

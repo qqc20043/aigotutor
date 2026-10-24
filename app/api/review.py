@@ -45,8 +45,23 @@ async def review_due(db: DbSession, user: UserDep, limit: int = 20):
 
 @router.post("/mark", response_model=dict)
 async def review_mark(body: ReviewMarkIn, db: DbSession, user: UserDep):
-    """22/27 标记复习结果，用 FSRS 计算下次到期时间。"""
+    """22/27 标记复习结果，用 FSRS 计算下次到期时间。
+
+    搁置卡联动（Anki 语义补全）：手动重做搁置卡并自评"记得"（rating>=3）
+    视为修复有效，自动恢复调度；自评"忘了"（rating=1）保持搁置——
+    还在修复中，不该回到每日队列继续打击信心。
+    """
     plan = await upsert_review_item(db, user.id, body.problem_id, body.rating)
+    if body.rating >= 3:
+        from sqlalchemy import update
+
+        from ..models import ReviewQueue
+
+        await db.execute(
+            update(ReviewQueue)
+            .where(ReviewQueue.user_id == user.id, ReviewQueue.problem_id == body.problem_id)
+            .values(suspended=False)
+        )
     curve = fsrs.forgetting_curve(plan["stability"], days=30, step=1.0)
     return {
         "ok": True,

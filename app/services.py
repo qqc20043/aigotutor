@@ -1010,7 +1010,8 @@ async def export_user_data(db: AsyncSession, user_id: str) -> dict[str, Any]:
 
     mastery = await get_mastery(db, user_id)
     wrongs = await list_wrong_book(db, user_id, limit=500)
-    queue = await get_review_queue(db, user_id, limit=500)
+    # 导出"全部学习数据"必须含搁置卡（否则迁移丢数据）
+    queue = await get_review_queue(db, user_id, include_suspended=True, limit=500)
     timeline = await state_timeline(db, user_id, limit=100)
     subs, _ = await list_submissions(db, user_id=user_id, limit=500)
 
