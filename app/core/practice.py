@@ -200,7 +200,7 @@ async def build_interleaved(
                     "title": i["title"],
                     "difficulty": i["difficulty"],
                     "source": "review",
-                    "reason": f"FSRS 到期（逾期 {i['overdue_days']} 天，保留率 {i['retrievability']:.0%}）",
+                    "reason": f"FSRS 到期（逾期 {i['overdue_days']:.0f} 天，保留率 {i['retrievability']:.0%}）",
                     "lapses": i["lapses"],
                 }
             )

@@ -512,3 +512,45 @@ def test_time_decay_day_quantized():
     c = time_decay(dt, now + timedelta(days=1))  # 跨天必须变化
     assert a == b, "同一天内衰减必须稳定（缓存键依赖它）"
     assert a != c, "跨天必须衰减"
+
+
+# ==================================================== 逾期量化（复习缓存键稳定性）
+async def test_review_queue_output_stable_within_day():
+    """同一时刻附近两次取复习队列，输出必须逐位相同（Agent 缓存键依赖）。
+
+    与 time_decay 修复同类根因：overdue_days 原为连续值（round 2 位），
+    每分钟漂移 -> review/recommend Agent 缓存永不命中 -> 复习优先页
+    每次打开同步等 LLM 12-19s。
+    """
+    from datetime import datetime, timedelta, timezone
+    from uuid import uuid4
+
+    from app.db import session_scope
+    from app.models import Problem, ReviewQueue, User
+    from app.services import get_review_queue
+
+    async with session_scope() as db:
+        uid = f"u{uuid4().hex[:8]}"
+        db.add(User(id=uid, username=uid[:8], password_hash="x"))
+        p = Problem(title="量化测试题", statement="s")
+        db.add(p)
+        await db.flush()
+        db.add(
+            ReviewQueue(
+                user_id=uid,
+                problem_id=p.id,
+                due_at=datetime.now(timezone.utc) - timedelta(days=3, hours=5),
+            )
+        )
+
+    async with session_scope() as db:
+        q1 = await get_review_queue(db, uid, include_suspended=True)
+    async with session_scope() as db:
+        q2 = await get_review_queue(db, uid, include_suspended=True, )
+    # due_at 是固定时间戳不受影响；比较时剔除（其余字段必须逐位相等）
+    for queue in (q1, q2):
+        for item in queue:
+            item.pop("due_at")
+            item.pop("is_due")  # 布尔，保守剔除
+    assert q1 == q2, "同一天内队列输出必须稳定（缓存键依赖）"
+    assert q1[0]["overdue_days"] == 3.0, "3 天 5 小时 -> 3 天（四舍五入到天）"

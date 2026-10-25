@@ -600,7 +600,11 @@ async def get_review_queue(
     out: list[dict[str, Any]] = []
     for item, problem in (await db.execute(stmt)).all():
         due = _aware(item.due_at)
-        overdue = fsrs.overdue_days(due, now)
+        # 逾期天数按"天"量化：连续值会随当前时刻漂移，流进 review/recommend
+        # Agent 的 build_user 后让缓存键永不命中（复习优先页每次 12-19s
+        # 同步等 LLM，与 time_decay 修复同一类根因）。保留率从量化后的
+        # 逾期推导，同一天内输出逐位稳定；业务粒度本来就是"天"。
+        overdue = float(int(fsrs.overdue_days(due, now) + 0.5))
         out.append(
             {
                 "problem_id": problem.id,
@@ -614,7 +618,7 @@ async def get_review_queue(
                 "lapses": item.lapses,
                 "due_at": due,
                 "is_due": fsrs.is_due(due, now),
-                "overdue_days": round(overdue, 2),
+                "overdue_days": overdue,
                 "suspended": bool(item.suspended),
             }
         )
