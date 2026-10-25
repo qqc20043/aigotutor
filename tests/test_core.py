@@ -546,7 +546,11 @@ async def test_review_queue_output_stable_within_day():
     async with session_scope() as db:
         q1 = await get_review_queue(db, uid, include_suspended=True)
     async with session_scope() as db:
-        q2 = await get_review_queue(db, uid, include_suspended=True, )
+        q2 = await get_review_queue(
+            db,
+            uid,
+            include_suspended=True,
+        )
     # due_at 是固定时间戳不受影响；比较时剔除（其余字段必须逐位相等）
     for queue in (q1, q2):
         for item in queue:
