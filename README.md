@@ -26,7 +26,7 @@ python run.py                     # http://127.0.0.1:8000
 
 ```bash
 # 5. 验证
-python -m pytest                      # 376 项单元 + 集成测试
+python -m pytest                      # 384 项单元 + 集成测试
 python -m pytest --cov=app            # 覆盖率（CI 阈值 75%）
 python -m ruff check .                # 代码质量（0 告警）
 python scripts/judge_selftest.py      # 判题沙箱自测（本机可用语言全过，CI 全语言 14/14）
@@ -325,6 +325,16 @@ START → judge → mastery ─┬─(有候选)→ recommend ─┬─(有标�
     `GET /api/practice/leech`、`POST .../suspend`、`POST /interleaved`
     （支持 tags）、`POST /leech/{id}/plan`、`/recipes` CRUD +
     `/recipes/{id}/generate`；入口在复习队列与错题本页。
+
+### 成长体系：XP 事实派生 + 成就 + 断签保护
+
+对标 Forge gamification 参考 / Duolingo / Habitica：**XP 不建账本**——等级与
+成就全部是既有事实表（submissions/checkins/interview_reports/review_queue）上的
+纯函数派生，可审计（前端逐项展示"你的 XP 从哪来"）、可重算、永不与事实漂移。
+等级曲线 `level = floor(sqrt(xp/50))+1`；12 个成就徽章（首杀/十连破/题海扬帆/
+连续打卡 3·7·30 天/单日 5AC/零提示通过面试/双语开发者等）带进度；
+**断签保护**（streak freeze 简化版）：连击回溯允许 2 个缺口日冻结桥接，
+历史最长保持严格口径。`GET /api/gamification`；入口在概览页「成长体系」卡。
 
 ### MCP Server：AI 宿主可调用的学习服务
 

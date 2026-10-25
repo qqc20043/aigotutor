@@ -161,6 +161,8 @@ async function finish(showReport = true) {
   }
 }
 
+const timeline = ref<Array<{ role: string; content: string; created_at: string }>>([])
+
 async function openReport(s: InterviewSessionOut) {
   const out = await interviewApi.report(s.id)
   if (!out.report) {
@@ -168,6 +170,7 @@ async function openReport(s: InterviewSessionOut) {
     return
   }
   report.value = out.report
+  timeline.value = out.timeline || []
   current.value = s
   phase.value = 'report'
 }
@@ -312,6 +315,16 @@ export default { name: 'InterviewView' }
           </el-card>
         </div>
         <div style="white-space: pre-wrap; line-height: 1.8">{{ report.narrative }}</div>
+
+        <el-divider v-if="timeline.length" content-position="left">对话时间线</el-divider>
+        <div class="tl">
+          <div v-for="(m, i) in timeline" :key="i" class="tl-row" :class="m.role">
+            <div class="tl-bubble">
+              <div class="tl-meta">{{ m.role === 'user' ? '我' : '考官' }}</div>
+              <div>{{ m.content }}</div>
+            </div>
+          </div>
+        </div>
       </el-card>
     </template>
   </div>
@@ -338,5 +351,35 @@ export default { name: 'InterviewView' }
 }
 .bubble.assistant {
   background: var(--el-fill-color-lighter);
+}
+</style>
+
+<style scoped>
+.tl {
+  max-height: 320px;
+  overflow: auto;
+}
+.tl-row {
+  display: flex;
+  margin-bottom: 8px;
+}
+.tl-row.user {
+  justify-content: flex-end;
+}
+.tl-bubble {
+  max-width: 78%;
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 13px;
+  background: var(--el-fill-color-lighter);
+  white-space: pre-wrap;
+}
+.tl-row.user .tl-bubble {
+  background: var(--el-color-primary-light-9);
+}
+.tl-meta {
+  font-size: 11px;
+  color: #909399;
+  margin-bottom: 2px;
 }
 </style>

@@ -6,6 +6,7 @@ import type {
   AgentList,
   AgentRunResult,
   ErrorCluster,
+  GamificationSummary,
   JudgeBackendInfo,
   MasteryOverview,
   MasteryProfileRow,
@@ -457,7 +458,18 @@ export const interviewApi = {
       .then((r) => r.data),
 
   report: (id: string) =>
-    http.get<{ report: InterviewReportOut | null; session: InterviewSessionOut }>(`/interview/${id}/report`).then((r) => r.data),
+    http
+      .get<{
+        report: InterviewReportOut | null
+        session: InterviewSessionOut
+        timeline: Array<{ role: string; content: string; strength: string; created_at: string }>
+      }>(`/interview/${id}/report`)
+      .then((r) => r.data),
+}
+
+// ------------------------------------------------------------ ⑭ 成长体系
+export const gamificationApi = {
+  summary: () => http.get<GamificationSummary>('/gamification').then((r) => r.data),
 }
 
 // ------------------------------------------------------------ ⑬ 智能练习

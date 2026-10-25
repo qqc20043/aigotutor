@@ -132,10 +132,32 @@ async def get_report(session_id: str, db: DbSession, user: UserDep):
     report = (
         await db.execute(select(InterviewReport).where(InterviewReport.session_id == s.id))
     ).scalar_one_or_none()
+    # 对话时间线（interviewing.io 式复盘：报告引用候选人原话与关键节点）
+    msgs = (
+        (
+            await db.execute(
+                select(ChatMessage)
+                .where(ChatMessage.session_id == s.id)
+                .order_by(ChatMessage.created_at.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    timeline = [
+        {
+            "role": m.role,
+            "content": m.content,
+            "strength": m.strength,
+            "created_at": m.created_at.isoformat(),
+        }
+        for m in msgs
+    ]
     if report is None:
-        return {"report": None, "session": _session_out(s, _meta_of(s))}
+        return {"report": None, "session": _session_out(s, _meta_of(s)), "timeline": timeline}
     return {
         "session": _session_out(s, _meta_of(s)),
+        "timeline": timeline,
         "report": {
             "verdict": report.verdict,
             "scores": json.loads(report.scores or "{}"),

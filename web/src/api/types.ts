@@ -330,3 +330,23 @@ export interface ChatDoneData {
   strength: string
   degraded: boolean
 }
+
+export interface Achievement {
+  id: string
+  title: string
+  desc: string
+  unlocked: boolean
+  progress: { current: number; target: number }
+}
+
+export interface GamificationSummary {
+  xp: number
+  level: number
+  level_title: string
+  next_level_xp: number
+  current_level_floor: number
+  breakdown: Array<{ key: string; label: string; count: number; per: number; xp: number }>
+  achievements: Achievement[]
+  unlocked_count: number
+  streak: { current: number; longest: number; freezes_used: number; freezes_left: number; checked_today: boolean }
+}

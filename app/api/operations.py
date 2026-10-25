@@ -180,6 +180,34 @@ async def get_report(db: DbSession, user: UserDep, days: int = Query(default=7, 
     return await build_report(db, row, days=days)
 
 
+# ---------------------------------------------------------------- 成长体系
+gamification_router = APIRouter(prefix="/api/gamification", tags=["⑨ 运营"])
+
+
+@gamification_router.get("", response_model=dict)
+async def gamification_summary(db: DbSession, user: UserDep):
+    """成长体系：XP（事实派生，含逐项明细）+ 等级 + 成就徽章 + 断签保护状态。
+
+    XP 不建账本：全部由 submissions/checkins/interview_reports/review_queue
+    等事实表实时派生（公式见 core/gamification.py），调整公式即全量生效。
+    """
+    from ..core.gamification import compute_xp, evaluate_achievements
+    from ..models import User as UserModel
+
+    row = await db.get(UserModel, user.id)
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "用户不存在")
+    xp = await compute_xp(db, user.id)
+    streak = await compute_streak(db, user.id, row.timezone)
+    achievements = await evaluate_achievements(db, user.id, streak)
+    return {
+        **xp,
+        "achievements": achievements,
+        "unlocked_count": sum(1 for a in achievements if a["unlocked"]),
+        "streak": streak,
+    }
+
+
 @report_router.get("/markdown", response_class=PlainTextResponse)
 async def get_report_markdown(
     db: DbSession, user: UserDep, days: int = Query(default=7, ge=1, le=365)

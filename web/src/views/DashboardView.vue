@@ -2,8 +2,8 @@
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { agentApi, masteryApi, problemApi, recommendApi, reviewApi } from '@/api'
-import type { MasteryOverview, RecommendResult, ReviewItem, RoadmapResult } from '@/api/types'
+import { agentApi, gamificationApi, masteryApi, problemApi, recommendApi, reviewApi } from '@/api'
+import type { GamificationSummary, MasteryOverview, RecommendResult, ReviewItem, RoadmapResult } from '@/api/types'
 import { difficultyType, levelColor, levelText, retentionColor } from '@/utils/format'
 
 const router = useRouter()
@@ -48,7 +48,21 @@ async function goPractice(problemId: string) {
   void router.push(`/problems/${problemId}`)
 }
 
-onMounted(load)
+// ---- 成长体系（XP 事实派生 + 成就徽章 + 断签保护）----
+const growth = ref<GamificationSummary | null>(null)
+
+async function loadGrowth() {
+  try {
+    growth.value = await gamificationApi.summary()
+  } catch {
+    /* 成长卡加载失败不阻塞概览 */
+  }
+}
+
+onMounted(() => {
+  void load()
+  void loadGrowth()
+})
 </script>
 
 <template>
@@ -286,6 +300,52 @@ onMounted(load)
       <template #header>学习建议</template>
       <div class="prose">{{ mastery.suggestion }}</div>
     </el-card>
+
+    <!-- 成长体系：XP（事实派生）+ 等级 + 成就 + 断签保护 -->
+    <el-card v-if="growth" class="page-card" shadow="never">
+      <template #header>
+        <div style="display: flex; align-items: center; gap: 10px">
+          <span>成长体系</span>
+          <el-tag effect="dark" type="warning">Lv.{{ growth.level }} · {{ growth.level_title }}</el-tag>
+          <el-tag effect="plain" size="small">{{ growth.xp }} XP</el-tag>
+          <el-tag effect="plain" size="small" type="success">
+            连续 {{ growth.streak.current }} 天 · 断签保护剩 {{ growth.streak.freezes_left }} 次
+          </el-tag>
+          <div class="flex-spacer" />
+          <span style="font-size: 12px; color: #909399">
+            距 Lv.{{ growth.level + 1 }} 还需 {{ growth.next_level_xp - growth.xp }} XP
+          </span>
+        </div>
+      </template>
+
+      <el-progress
+        :percentage="Math.min(100, Math.round(((growth.xp - growth.current_level_floor) / (growth.next_level_xp - growth.current_level_floor)) * 100))"
+        :stroke-width="14"
+        style="margin-bottom: 14px"
+      />
+
+      <div style="margin-bottom: 12px">
+        <span style="font-weight: 600; font-size: 13px">成就（{{ growth.unlocked_count }}/{{ growth.achievements.length }}）</span>
+        <div class="ach-grid">
+          <el-tooltip v-for="a in growth.achievements" :key="a.id" :content="a.desc + '（' + a.progress.current + '/' + a.progress.target + '）'" placement="top">
+            <div class="ach-badge" :class="{ locked: !a.unlocked }">
+              <div class="ach-title">{{ a.title }}</div>
+              <div class="ach-prog">{{ a.progress.current }}/{{ a.progress.target }}</div>
+            </div>
+          </el-tooltip>
+        </div>
+      </div>
+
+      <el-collapse>
+        <el-collapse-item :title="`XP 明细（${growth.xp} 分从哪来）`">
+          <div v-for="b in growth.breakdown" :key="b.key" class="xp-row">
+            <span>{{ b.label }} × {{ b.count }}</span>
+            <span style="color: #909399">@{{ b.per }}/个</span>
+            <span style="margin-left: auto; font-weight: 600">+{{ b.xp }}</span>
+          </div>
+        </el-collapse-item>
+      </el-collapse>
+    </el-card>
   </div>
 </template>
 
@@ -345,5 +405,41 @@ onMounted(load)
 
 .stage-desc {
   padding-bottom: 6px;
+}
+</style>
+
+<style scoped>
+.ach-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+.ach-badge {
+  border: 1px solid var(--el-color-warning);
+  background: var(--el-color-warning-light-9);
+  border-radius: 8px;
+  padding: 6px 10px;
+  text-align: center;
+  min-width: 72px;
+}
+.ach-badge.locked {
+  border-color: var(--el-border-color-lighter);
+  background: var(--fill-color-lighter, #fafafa);
+  opacity: 0.6;
+}
+.ach-title {
+  font-size: 12px;
+  font-weight: 600;
+}
+.ach-prog {
+  font-size: 11px;
+  color: #909399;
+}
+.xp-row {
+  display: flex;
+  gap: 8px;
+  font-size: 13px;
+  padding: 3px 0;
 }
 </style>

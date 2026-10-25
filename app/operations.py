@@ -143,19 +143,28 @@ async def compute_streak(
     stmt = select(DailyCheckin.checkin_date).where(DailyCheckin.user_id == user_id)
     dates = {d for (d,) in (await db.execute(stmt)).all()}
     if not dates:
-        return {"current": 0, "longest": 0, "total_days": 0, "checked_today": False}
+        from .core.gamification import STREAK_FREEZE_ALLOWANCE
+
+        return {
+            "current": 0,
+            "longest": 0,
+            "total_days": 0,
+            "checked_today": False,
+            "freezes_used": 0,
+            "freezes_left": STREAK_FREEZE_ALLOWANCE,
+        }
 
     today_str = local_today.isoformat()
     checked_today = today_str in dates
 
-    # 当前连击：从今天（或昨天）往前数
-    cursor = local_today if checked_today else local_today - timedelta(days=1)
-    current = 0
-    while cursor.isoformat() in dates:
-        current += 1
-        cursor -= timedelta(days=1)
+    # 当前连击：断签保护语义（Duolingo streak freeze 简化版）——回溯允许
+    # 最多 2 个缺口日被冻结桥接；纯函数见 core.gamification.streak_with_freeze
+    from .core.gamification import STREAK_FREEZE_ALLOWANCE, streak_with_freeze
 
-    # 历史最长：把所有日期排序后扫描
+    frozen = streak_with_freeze(dates, local_today)
+    current = frozen["current"]
+
+    # 历史最长：把所有日期排序后扫描（严格口径，不含冻结桥接）
     ordered = sorted(dates)
     longest = 0
     run = 0
@@ -174,6 +183,8 @@ async def compute_streak(
         "longest": longest,
         "total_days": len(dates),
         "checked_today": checked_today,
+        "freezes_used": frozen["freezes_used"],
+        "freezes_left": STREAK_FREEZE_ALLOWANCE - frozen["freezes_used"],
     }
 
 

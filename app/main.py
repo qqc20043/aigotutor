@@ -161,6 +161,7 @@ for router in (
     operations.checkin_router,
     operations.rank_router,
     operations.notif_router,
+    operations.gamification_router,
     chat.router,
     interview.router,
     practice.router,
