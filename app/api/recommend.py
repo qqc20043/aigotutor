@@ -6,7 +6,6 @@ from datetime import datetime
 
 from fastapi import APIRouter
 
-from ..core.fsrs import overdue_days
 from ..core.memory import memory_block_for
 from ..core.pipeline import build_roadmap, recommend_next
 from ..deps import DbSession, ModelConfigDep, UserDep
@@ -40,13 +39,16 @@ async def recommend_next_api(
     recent = await recent_submissions(db, user.id, limit=max(1, exclude_recent))
     recent_ids = list(dict.fromkeys(s.problem_id for s in recent))
 
-    # 复习队列里逾期的题优先级更高，这里把 due 信息塞进候选
+    # 复习队列里逾期的题优先级更高，这里把 due 信息塞进候选。
+    # overdue 直接用队列里的量化值（整天）——内联重算连续值会让
+    # recommend Agent 的缓存键每 ~15 分钟漂移一次（time_decay 同类根因）。
     queue = await get_review_queue(db, user.id, limit=200)
-    due_map = {q["problem_id"]: q["due_at"] for q in queue}
+    due_map = {q["problem_id"]: (q["due_at"], q["overdue_days"]) for q in queue}
 
     candidates = []
     for p in problems:
-        due = due_map.get(p.id)
+        due_info = due_map.get(p.id)
+        due = due_info[0] if due_info else None
         candidates.append(
             {
                 "id": p.id,
@@ -55,7 +57,7 @@ async def recommend_next_api(
                 "difficulty_score": p.difficulty_score,
                 "tags": [t["name"] for t in tag_map.get(p.id, [])],
                 "due_at": due.isoformat() if isinstance(due, datetime) else None,
-                "overdue_days": round(overdue_days(due), 2),
+                "overdue_days": due_info[1] if due_info else 0.0,
             }
         )
 
