@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { onBeforeUnmount, onMounted, reactive, ref, shallowRef } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import * as echarts from 'echarts'
 import { adminApi } from '@/api'
 import { errorText } from '@/api/http'
 import { useUserStore } from '@/stores/user'
@@ -419,11 +420,93 @@ async function saveCases() {
   }
 }
 
+// ---------------- 趋势图表 ----------------
+const trends = ref<{ items: Array<{ date: string; submissions: number; ac: number; new_users: number }>; totals: Record<string, number> } | null>(null)
+const trendEl = ref<HTMLDivElement | null>(null)
+const trendChart = shallowRef<echarts.ECharts | null>(null)
+const trendLoading = ref(false)
+
+async function loadTrends() {
+  trendLoading.value = true
+  try {
+    trends.value = await adminApi.adminTrends(30)
+    renderTrend()
+  } catch (e) {
+    ElMessage.error(errorText(e))
+  } finally {
+    trendLoading.value = false
+  }
+}
+
+function renderTrend() {
+  if (!trendEl.value || !trends.value) return
+  if (!trendChart.value) trendChart.value = echarts.init(trendEl.value)
+  const items = trends.value.items
+  trendChart.value.setOption({
+    tooltip: { trigger: 'axis' },
+    legend: { data: ['提交', 'AC', '新增用户'], textStyle: { fontSize: 11 } },
+    grid: { left: 40, right: 16, top: 36, bottom: 28 },
+    xAxis: { type: 'category', data: items.map((i) => i.date.slice(5)) },
+    yAxis: { type: 'value', minInterval: 1 },
+    series: [
+      { name: '提交', type: 'bar', data: items.map((i) => i.submissions), itemStyle: { color: '#409eff' } },
+      { name: 'AC', type: 'bar', data: items.map((i) => i.ac), itemStyle: { color: '#67c23a' } },
+      { name: '新增用户', type: 'line', smooth: true, data: items.map((i) => i.new_users), itemStyle: { color: '#e6a23c' } },
+    ],
+  })
+}
+
+// ---------------- 判题后端状态 ----------------
+const judgeStatus = ref<Record<string, any> | null>(null)
+
+async function loadJudgeStatus() {
+  try {
+    judgeStatus.value = await adminApi.adminJudgeStatus()
+  } catch {
+    /* 状态卡失败不阻塞 */
+  }
+}
+
+// ---------------- CSV 导入 ----------------
+const importVisible = ref(false)
+const importing = ref(false)
+const importCsv = ref('用户甲,passw0rd123\n用户乙,passw0rd123,昵称可选')
+const importResult = ref<{ created_count: number; failed: Array<{ line: number; username: string; reason: string }> } | null>(null)
+
+async function doImport() {
+  if (!importCsv.value.trim()) {
+    ElMessage.warning('请粘贴 CSV 内容')
+    return
+  }
+  importing.value = true
+  try {
+    importResult.value = await adminApi.adminImportUsers(importCsv.value)
+    ElMessage.success(`导入完成：成功 ${importResult.value.created_count} 人，失败 ${importResult.value.failed.length} 人`)
+    await load()
+  } catch (e) {
+    ElMessage.error(errorText(e))
+  } finally {
+    importing.value = false
+  }
+}
+
+function resizeAll() {
+  trendChart.value?.resize()
+}
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', resizeAll)
+  trendChart.value?.dispose()
+})
+
 onMounted(() => {
   void load()
   void loadProblems()
   void loadSubmissions()
   void loadAudit()
+  void loadTrends()
+  void loadJudgeStatus()
+  window.addEventListener('resize', resizeAll)
 })
 </script>
 
@@ -505,6 +588,50 @@ onMounted(() => {
         </el-button>
       </div>
     </el-card>
+
+    <!-- 运营趋势 + 判题状态 -->
+    <el-row :gutter="16">
+      <el-col :xs="24" :md="16">
+        <el-card class="page-card" shadow="never" v-loading="trendLoading">
+          <template #header>
+            <div style="display: flex; align-items: center; gap: 10px">
+              <span>运营趋势（近 30 天）</span>
+              <el-tag size="small" effect="plain" type="info">
+                提交 {{ trends?.totals?.submissions ?? '-' }} · AC {{ trends?.totals?.ac ?? '-' }} · 新用户 {{ trends?.totals?.new_users ?? '-' }}
+              </el-tag>
+              <div class="flex-spacer" />
+              <el-button size="small" @click="loadTrends">刷新</el-button>
+            </div>
+          </template>
+          <div ref="trendEl" style="height: 260px" />
+        </el-card>
+      </el-col>
+      <el-col :xs="24" :md="8">
+        <el-card class="page-card" shadow="never">
+          <template #header><span>判题后端状态</span></template>
+          <template v-if="judgeStatus">
+            <el-descriptions :column="1" border size="small">
+              <el-descriptions-item label="后端">{{ judgeStatus.powered_by || judgeStatus.configured }}</el-descriptions-item>
+              <el-descriptions-item label="隔离强度">
+                <el-tag size="small" :type="judgeStatus.isolation === 'strong' ? 'success' : 'warning'" effect="plain">
+                  {{ judgeStatus.isolation }}
+                </el-tag>
+              </el-descriptions-item>
+              <el-descriptions-item label="可用语言">
+                <el-tag v-for="l in judgeStatus.languages" :key="l" size="small" effect="plain" style="margin-right: 4px">{{ l }}</el-tag>
+              </el-descriptions-item>
+              <el-descriptions-item label="运行中 / 排队任务">
+                {{ judgeStatus.running_tasks }} / {{ judgeStatus.queued_tasks }}（并发上限 {{ judgeStatus.concurrency_limit }}）
+              </el-descriptions-item>
+              <el-descriptions-item label="限制">{{ judgeStatus.timeout_s }}s / {{ judgeStatus.memory_mb }}MB</el-descriptions-item>
+            </el-descriptions>
+            <div v-if="judgeStatus.warnings?.length" class="stat-label" style="margin-top: 8px; color: #e6a23c">
+              {{ judgeStatus.warnings.join('；') }}
+            </div>
+          </template>
+        </el-card>
+      </el-col>
+    </el-row>
 
     <!-- 用户管理 -->
     <el-card class="page-card" shadow="never">
@@ -646,6 +773,7 @@ onMounted(() => {
           </el-select>
           <el-button size="small" @click="sQuery.page = 1; loadSubmissions()">筛选</el-button>
           <el-button size="small" type="primary" plain @click="announceVisible = true">发公告</el-button>
+          <el-button size="small" plain @click="importVisible = true">导入用户</el-button>
         </div>
       </template>
       <el-table :data="subs" size="small" stripe v-loading="subsLoading">
@@ -825,6 +953,26 @@ onMounted(() => {
       <template #footer>
         <el-button @click="casesVisible = false">取消</el-button>
         <el-button type="primary" :loading="casesSaving" @click="saveCases">保存全部用例</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- CSV 导入用户 -->
+    <el-dialog v-model="importVisible" title="CSV 批量导入用户" width="640px">
+      <el-alert type="info" :closable="false" style="margin-bottom: 10px"
+        title="每行一个用户：用户名,密码[,昵称]。密码至少 8 位且非纯数字/字母。# 开头的行会被忽略。" />
+      <el-input v-model="importCsv" type="textarea" :rows="8" class="mono" />
+      <div v-if="importResult" style="margin-top: 10px">
+        <el-alert type="success" :closable="false"
+          :title="`成功导入 ${importResult.created_count} 人`" />
+        <div v-if="importResult.failed.length" style="margin-top: 8px">
+          <div v-for="(f, i) in importResult.failed" :key="i" class="stat-label" style="color: #f56c6c">
+            第 {{ f.line }} 行 {{ f.username || '(空)' }}：{{ f.reason }}
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="importVisible = false">关闭</el-button>
+        <el-button type="primary" :loading="importing" @click="doImport">导入</el-button>
       </template>
     </el-dialog>
 

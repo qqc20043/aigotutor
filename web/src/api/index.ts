@@ -440,6 +440,33 @@ export const adminApi = {
       )
       .then((r) => r.data),
 
+  /** 运营趋势：每日提交/AC/新增用户 */
+  adminTrends: (days = 30) =>
+    http
+      .get<{
+        days: number
+        items: Array<{ date: string; submissions: number; ac: number; new_users: number }>
+        totals: { submissions: number; ac: number; new_users: number }
+      }>('/admin/trends', { params: { days } })
+      .then((r) => r.data),
+
+  /** 判题后端状态 */
+  adminJudgeStatus: () =>
+    http
+      .get<Record<string, any>>('/admin/judge-status')
+      .then((r) => r.data),
+
+  /** CSV 批量导入用户（每行：用户名,密码[,昵称]） */
+  adminImportUsers: (csv: string) =>
+    http
+      .post<{
+        ok: boolean
+        created: Array<{ line: number; username: string }>
+        failed: Array<{ line: number; username: string; reason: string }>
+        created_count: number
+      }>('/admin/users/import', { csv })
+      .then((r) => r.data),
+
   /** 站内公告：username 留空 = 全员广播 */
   adminAnnounce: (body: { title: string; body?: string; link?: string; username?: string }) =>
     http.post<{ ok: boolean; sent: number; scope: string }>('/admin/announce', body).then((r) => r.data),

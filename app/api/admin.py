@@ -720,3 +720,142 @@ async def admin_replace_testcases(
         detail={"old_count": old_count, "new_count": len(rows), "title": problem.title},
     )
     return {"ok": True, "problem_id": problem_id, "saved": len(rows), "old_count": old_count}
+
+
+# ================================================ 数据趋势（对标 QDUOJ 可视化统计）
+@router.get("/trends", response_model=dict)
+async def admin_trends(db: DbSession, admin: AdminDep, days: int = Query(default=30, ge=7, le=90)):
+    """运营趋势：每日提交数 / AC 数 / 新增用户数（按天聚合，供图表）。"""
+    from datetime import timedelta
+
+    from sqlalchemy import text
+
+    from ..operations import _now
+
+    now = _now()
+    start = now - timedelta(days=days)
+    sub_rows = (
+        await db.execute(
+            text(
+                "SELECT DATE(created_at) AS d, COUNT(*) AS total, "
+                "SUM(CASE WHEN verdict = 'AC' THEN 1 ELSE 0 END) AS ac "
+                "FROM submissions WHERE created_at >= :start "
+                "GROUP BY DATE(created_at)"
+            ),
+            {"start": start},
+        )
+    ).fetchall()
+    user_rows = (
+        await db.execute(
+            text(
+                "SELECT DATE(created_at) AS d, COUNT(*) AS total "
+                "FROM users WHERE created_at >= :start GROUP BY DATE(created_at)"
+            ),
+            {"start": start},
+        )
+    ).fetchall()
+    by_date: dict[str, dict[str, int]] = {}
+    for i in range(days + 1):
+        d = (now - timedelta(days=i)).date().isoformat()
+        by_date[d] = {"date": d, "submissions": 0, "ac": 0, "new_users": 0}
+    for d, total, ac in sub_rows:
+        key = str(d)
+        if key in by_date:
+            by_date[key]["submissions"] = int(total or 0)
+            by_date[key]["ac"] = int(ac or 0)
+    for d, total in user_rows:
+        key = str(d)
+        if key in by_date:
+            by_date[key]["new_users"] = int(total or 0)
+    items = [by_date[d] for d in sorted(by_date)]
+    return {
+        "days": days,
+        "items": items,
+        "totals": {
+            "submissions": sum(i["submissions"] for i in items),
+            "ac": sum(i["ac"] for i in items),
+            "new_users": sum(i["new_users"] for i in items),
+        },
+    }
+
+
+# ================================================ 判题后端状态（对标 QDUOJ 判题机管理）
+@router.get("/judge-status", response_model=dict)
+async def admin_judge_status(db: DbSession, admin: AdminDep):
+    """判题后端状态：可用语言 / 隔离强度 / 资源限制 / 运行中任务数。"""
+    from ..core.tasks import stats as task_stats
+    from ..judge_service import judge_availability
+
+    info = await judge_availability()
+    runtime = task_stats()
+    return {
+        **info,
+        "running_tasks": runtime.get("by_status", {}).get("running", 0),
+        "queued_tasks": runtime.get("queued", 0),
+        "concurrency_limit": runtime.get("concurrency_limit", 0),
+    }
+
+
+# ================================================ CSV 批量导入用户（对标 Hydro）
+class UserImportIn(BaseModel):
+    csv: str = Field(
+        min_length=1, max_length=200000, description="每行：用户名,密码[,昵称]；# 开头为注释"
+    )
+
+
+@router.post("/users/import", response_model=dict)
+async def admin_import_users(body: UserImportIn, db: DbSession, admin: AdminDep):
+    """CSV 批量导入用户。返回逐行结果；重复用户名/弱密码计入 failed 不中断。"""
+    from ..security import hash_password, password_strength
+    from ..services import create_user, get_user_by_name
+
+    created: list[dict[str, str]] = []
+    failed: list[dict[str, str]] = []
+    for line_no, raw_line in enumerate(body.csv.splitlines(), 1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = [x.strip() for x in line.split(",")]
+        if len(parts) < 2:
+            failed.append(
+                {
+                    "line": line_no,
+                    "username": parts[0] if parts else "",
+                    "reason": "格式错误（需要 用户名,密码）",
+                }
+            )
+            continue
+        username, password = parts[0], parts[1]
+        nickname = parts[2] if len(parts) > 2 else username
+        if not username:
+            failed.append({"line": line_no, "username": "", "reason": "用户名为空"})
+            continue
+        if await get_user_by_name(db, username) is not None:
+            failed.append({"line": line_no, "username": username, "reason": "用户名已存在"})
+            continue
+        # password_strength 返回 (是否合格, 原因) 元组——解包并透出真实原因
+        # （初版误当布尔用，元组恒真 -> 弱密码全被放行，测试抓到）
+        ok_pwd, pwd_reason = password_strength(password)
+        if not ok_pwd:
+            failed.append(
+                {
+                    "line": line_no,
+                    "username": username,
+                    "reason": pwd_reason or "密码强度不合格",
+                }
+            )
+            continue
+        await create_user(
+            db, username=username, password_hash=hash_password(password), nickname=nickname[:64]
+        )
+        created.append({"line": line_no, "username": username})
+    await log_admin_action(
+        db,
+        actor_id=admin.id,
+        actor_name=admin.username,
+        action="users.batch",
+        target_type="user",
+        target_id="csv-import",
+        detail={"created": len(created), "failed": len(failed)},
+    )
+    return {"ok": True, "created": created, "failed": failed, "created_count": len(created)}

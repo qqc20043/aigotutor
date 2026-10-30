@@ -330,3 +330,78 @@ async def test_admin_testcase_management(client):
     # 用例变更后历史提交可重判（闭环）
     after = (await client.get(f"/api/admin/problems/{pid}/testcases", headers=H)).json()
     assert len(after["items"]) == 1
+
+
+# ==================================================== 趋势 / 判题状态 / CSV 导入
+async def test_admin_trends_shape(client):
+    """趋势接口：按天聚合（提交/AC/新增用户），窗口外为 0。"""
+    ta, ts = await _admin_and_student(client)
+    H = {"Authorization": f"Bearer {ta}"}
+    pid = (
+        await client.post(
+            "/api/admin/problems",
+            headers=H,
+            json={
+                "title": "趋势题",
+                "statement": "s",
+                "testcases": [{"input": "1", "output": "1"}],
+            },
+        )
+    ).json()["id"]
+    await client.post(
+        "/api/submissions",
+        headers={"Authorization": f"Bearer {ts}"},
+        json={"problem_id": pid, "language": "python", "code": "print(1)"},
+    )
+
+    r = await client.get("/api/admin/trends?days=14", headers=H)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert len(body["items"]) == 15  # days+1
+    today = body["items"][-1]
+    assert today["submissions"] >= 1 and today["new_users"] >= 2
+    assert body["totals"]["submissions"] >= 1
+    # 除今天外全 0（新测试库）
+    earlier = list(body["items"][:-1])
+    assert all(i["submissions"] == 0 and i["new_users"] == 0 for i in earlier)
+
+
+async def test_admin_judge_status(client):
+    ta, _ts = await _admin_and_student(client)
+    r = await client.get("/api/admin/judge-status", headers={"Authorization": f"Bearer {ta}"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["available"] is True
+    assert "python" in body["languages"]
+    assert {"running_tasks", "queued_tasks", "concurrency_limit"} <= set(body)
+
+
+async def test_admin_csv_import(client):
+    ta, ts = await _admin_and_student(client)
+    H = {"Authorization": f"Bearer {ta}"}
+    # 已存在用户名 + 弱密码 + 合法行 混合
+    existing = (await client.get("/api/auth/me", headers={"Authorization": f"Bearer {ts}"})).json()[
+        "username"
+    ]
+    csv = (
+        "# 注释行应被忽略\n"
+        "imported_a,passw0rd123,导入甲\n"
+        "imported_b,passw0rd123\n"
+        f"{existing},passw0rd123\n"
+        "weak_user,123\n"
+        "badline\n"
+    )
+    r = await client.post("/api/admin/users/import", headers=H, json={"csv": csv})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["created_count"] == 2
+    reasons = {f["reason"] for f in body["failed"]}
+    assert reasons == {"用户名已存在", "密码至少 8 位", "格式错误（需要 用户名,密码）"}
+    reasons = {f["reason"] for f in body["failed"]}
+    assert reasons == {"用户名已存在", "密码至少 8 位", "格式错误（需要 用户名,密码）"}
+
+    # 导入的用户能登录
+    lg = await client.post(
+        "/api/auth/login", json={"username": "imported_a", "password": "passw0rd123"}
+    )
+    assert lg.status_code == 200
