@@ -551,3 +551,28 @@ class PracticeSet(Base, TimestampMixin):
     name: Mapped[str] = mapped_column(String(120), default="")
     # 配方：{size, include_review, include_leech, include_fresh, tags}
     recipe: Mapped[str] = mapped_column(Text, default="{}")
+
+
+# ---------------------------------------------------- 23 admin_audit_logs
+class AdminAuditLog(Base, TimestampMixin):
+    """管理操作审计：谁、何时、对什么、做了什么。
+
+    为什么必须有：管理端能做删题/停用用户/重置密码/改角色等高危动作，
+    没有留痕时"谁干的、干了什么"无从追溯（安全审计的基本要求）。
+    actor_name 冗余存用户名：用户被改名/删除后日志仍可读。
+    """
+
+    __tablename__ = "admin_audit_logs"
+    __table_args__ = (
+        Index("ix_audit_created", "created_at"),
+        Index("ix_audit_actor", "actor_id", "created_at"),
+        Index("ix_audit_action", "action"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    actor_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    actor_name: Mapped[str] = mapped_column(String(64), default="")
+    action: Mapped[str] = mapped_column(String(48), nullable=False)
+    target_type: Mapped[str] = mapped_column(String(32), default="")
+    target_id: Mapped[str] = mapped_column(String(64), default="")
+    detail: Mapped[str] = mapped_column(Text, default="{}")  # JSON：参数与结果摘要

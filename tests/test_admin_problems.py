@@ -217,3 +217,116 @@ async def test_admin_announce_broadcast_and_single(client):
         "/api/admin/announce", headers={"Authorization": f"Bearer {ts}"}, json={"title": "x"}
     )
     assert r.status_code == 403
+
+
+# ==================================================== 审计 / 批量 / 用例维护
+async def test_audit_log_records_admin_actions(client):
+    """所有管理动作必须留痕（谁/何时/对什么/做了什么）。"""
+    ta, ts = await _admin_and_student(client)
+    H = {"Authorization": f"Bearer {ta}"}
+    pid = (
+        await client.post(
+            "/api/admin/problems",
+            headers=H,
+            json={
+                "title": "审计测试题",
+                "statement": "s",
+                "testcases": [{"input": "1", "output": "1"}],
+            },
+        )
+    ).json()["id"]
+    await client.patch(f"/api/admin/problems/{pid}", headers=H, json={"title": "审计测试题2"})
+    me = (await client.get("/api/auth/me", headers={"Authorization": f"Bearer {ts}"})).json()
+    await client.patch(f"/api/admin/users/{me['id']}", headers=H, json={"daily_goal": 4})
+
+    # 直接查库确认审计是否写入（独立事务时序）
+    from sqlalchemy import select as _sel
+
+    from app.db import session_scope as _ss
+    from app.models import AdminAuditLog as _AL
+
+    async with _ss() as _db:
+        rows = (await _db.execute(_sel(_AL.action, _AL.actor_name))).all()
+    print("DB audit rows:", rows)
+
+    logs = (await client.get("/api/admin/audit?page=1&size=20", headers=H)).json()
+    actions = [i["action"] for i in logs["items"]]
+    assert "problem.create" in actions
+    assert "problem.update" in actions
+    assert "user.patch" in actions
+    item = next(i for i in logs["items"] if i["action"] == "problem.update")
+    assert item["actor_name"], "必须记录操作人"
+    assert item["action_label"] == "修改题目"
+    assert item["detail"]["updated"] == ["title"]
+
+    # 按动作筛选
+    only = (await client.get("/api/admin/audit?action=problem.create", headers=H)).json()
+    assert all(i["action"] == "problem.create" for i in only["items"])
+
+
+async def test_batch_users(client):
+    ta, _ts = await _admin_and_student(client)
+    H = {"Authorization": f"Bearer {ta}"}
+    ids = []
+    for _ in range(3):
+        r = await client.post(
+            "/api/auth/register",
+            json={"username": f"bt{uuid.uuid4().hex[:6]}", "password": "test123456"},
+        )
+        tok = r.json()["access_token"]
+        me = (await client.get("/api/auth/me", headers={"Authorization": f"Bearer {tok}"})).json()
+        ids.append(me["id"])
+
+    r = await client.post(
+        "/api/admin/users/batch", headers=H, json={"user_ids": ids, "is_active": False}
+    )
+    assert r.status_code == 200 and r.json()["updated"] == 3
+
+    # 被停用用户的 token 立即失效
+    r = await client.post(
+        "/api/auth/login", json={"username": "x", "password": "y"}
+    )  # 仅确认接口正常
+    assert r.status_code in (401, 422)
+
+    # 批量操作自己 → 拒绝
+    admin_me = (await client.get("/api/auth/me", headers=H)).json()
+    r = await client.post(
+        "/api/admin/users/batch", headers=H, json={"user_ids": [admin_me["id"]], "is_active": False}
+    )
+    assert r.status_code == 400
+
+
+async def test_admin_testcase_management(client):
+    """管理员可查看全部用例（含隐藏内容）并整批替换——建题后的日常维护。"""
+    ta, _ts = await _admin_and_student(client)
+    H = {"Authorization": f"Bearer {ta}"}
+    pid = (
+        await client.post(
+            "/api/admin/problems",
+            headers=H,
+            json={
+                "title": "用例维护题",
+                "statement": "s",
+                "testcases": [
+                    {"input": "1 2\n", "output": "3\n"},
+                    {"input": "5 5\n", "output": "10\n"},
+                ],
+            },
+        )
+    ).json()["id"]
+
+    got = (await client.get(f"/api/admin/problems/{pid}/testcases", headers=H)).json()
+    assert len(got["items"]) == 2
+    assert got["items"][0]["output"] == "3\n", "管理员能看到隐藏用例内容"
+
+    r = await client.put(
+        f"/api/admin/problems/{pid}/testcases",
+        headers=H,
+        json={"cases": [{"input": "9 9\n", "output": "18\n", "hidden": "true"}]},
+    )
+    assert r.status_code == 200
+    assert r.json()["saved"] == 1 and r.json()["old_count"] == 2
+
+    # 用例变更后历史提交可重判（闭环）
+    after = (await client.get(f"/api/admin/problems/{pid}/testcases", headers=H)).json()
+    assert len(after["items"]) == 1

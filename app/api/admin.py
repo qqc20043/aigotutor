@@ -11,6 +11,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
+from ..core.audit import list_audit_logs, log_admin_action
 from ..deps import AdminDep, DbSession, PageDep
 from ..operations import (
     admin_cleanup_orphan_data,
@@ -78,6 +79,20 @@ async def patch_user(user_id: str, body: UserPatchIn, db: DbSession, admin: Admi
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "用户不存在")
 
+    await log_admin_action(
+        db,
+        actor_id=admin.id,
+        actor_name=admin.username,
+        action="user.patch",
+        target_type="user",
+        target_id=user_id,
+        detail={
+            "username": row.username,
+            "role": body.role,
+            "is_active": body.is_active,
+            "daily_goal": body.daily_goal,
+        },
+    )
     return {
         "id": row.id,
         "username": row.username,
@@ -126,13 +141,31 @@ async def delete_problem(
 
     title = problem.title
     ok = await admin_delete_problem(db, problem_id)
+    await log_admin_action(
+        db,
+        actor_id=admin.id,
+        actor_name=admin.username,
+        action="problem.delete",
+        target_type="problem",
+        target_id=problem_id,
+        detail={"title": title, "ok": ok},
+    )
     return {"ok": ok, "deleted": problem_id, "title": title}
 
 
 @router.post("/cleanup", response_model=dict)
 async def cleanup(db: DbSession, admin: AdminDep):
     """数据清理：孤儿提交、30 天前的已读通知。"""
-    return await admin_cleanup_orphan_data(db)
+    result = await admin_cleanup_orphan_data(db)
+    await log_admin_action(
+        db,
+        actor_id=admin.id,
+        actor_name=admin.username,
+        action="data.cleanup",
+        target_type="system",
+        detail=result,
+    )
+    return result
 
 
 @router.get("/agents", response_model=dict)
@@ -271,6 +304,15 @@ async def admin_create_problem(body: AdminProblemCreate, db: DbSession, admin: A
                 },
             )
             saved_cases += 1
+    await log_admin_action(
+        db,
+        actor_id=admin.id,
+        actor_name=admin.username,
+        action="problem.create",
+        target_type="problem",
+        target_id=problem.id,
+        detail={"title": problem.title, "cases_saved": saved_cases, "tags": body.tags},
+    )
     return {
         "id": problem.id,
         "title": problem.title,
@@ -291,6 +333,15 @@ async def admin_patch_problem(
     for k, v in updates.items():
         setattr(problem, k, v)
     await db.flush()
+    await log_admin_action(
+        db,
+        actor_id=admin.id,
+        actor_name=admin.username,
+        action="problem.update",
+        target_type="problem",
+        target_id=problem_id,
+        detail={"updated": list(updates), "title": problem.title},
+    )
     return {"ok": True, "problem_id": problem_id, "updated": list(updates)}
 
 
@@ -480,6 +531,15 @@ async def admin_reset_password(user_id: str, db: DbSession, admin: AdminDep):
     user.password_hash = hash_password(temp)
     user.token_version = int(user.token_version or 0) + 1
     await db.flush()
+    await log_admin_action(
+        db,
+        actor_id=admin.id,
+        actor_name=admin.username,
+        action="user.reset_password",
+        target_type="user",
+        target_id=user_id,
+        detail={"username": user.username},  # 绝不记录临时密码本身
+    )
     return {
         "ok": True,
         "username": user.username,
@@ -513,4 +573,150 @@ async def admin_announce(body: AnnounceIn, db: DbSession, admin: AdminDep):
             db, uid, kind="system", title=body.title, body=body.body, link=body.link
         )
         sent += 1
+    await log_admin_action(
+        db,
+        actor_id=admin.id,
+        actor_name=admin.username,
+        action="announce.send",
+        target_type="user" if body.username else "all",
+        target_id=body.username,
+        detail={"title": body.title, "sent": sent, "link": body.link},
+    )
     return {"ok": True, "sent": sent, "scope": "single" if body.username else "broadcast"}
+
+
+# ================================================ 审计日志
+@router.get("/audit", response_model=dict)
+async def admin_audit(
+    db: DbSession,
+    admin: AdminDep,
+    page: PageDep,
+    action: str = "",
+    actor: str = "",
+):
+    """管理操作审计日志：谁在什么时候对什么做了什么（按动作/操作人筛选）。"""
+    return await list_audit_logs(
+        db, action=action, actor=actor, limit=page.size, offset=page.offset
+    )
+
+
+# ================================================ 批量用户操作
+class BatchUsersIn(BaseModel):
+    user_ids: list[str] = Field(min_length=1, max_length=200)
+    is_active: bool | None = None
+    role: str | None = Field(default=None, pattern="^(user|admin)$")
+    daily_goal: int | None = Field(default=None, ge=1, le=50)
+
+
+@router.post("/users/batch", response_model=dict)
+async def admin_batch_users(body: BatchUsersIn, db: DbSession, admin: AdminDep):
+    """批量启用/停用/改角色/改目标（逐个校验：不能操作自己）。"""
+    from ..operations import admin_set_user
+
+    if body.user_ids and all(x == admin.id for x in body.user_ids):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "不能对自己执行批量操作")
+
+    updated, skipped = 0, []
+    for uid in body.user_ids:
+        if uid == admin.id:
+            skipped.append({"user_id": uid, "reason": "不能操作自己"})
+            continue
+        row = await admin_set_user(
+            db,
+            uid,
+            role=body.role,
+            is_active=body.is_active,
+            daily_goal=body.daily_goal,
+        )
+        if row is None:
+            skipped.append({"user_id": uid, "reason": "用户不存在"})
+        else:
+            updated += 1
+    await log_admin_action(
+        db,
+        actor_id=admin.id,
+        actor_name=admin.username,
+        action="users.batch",
+        target_type="user",
+        target_id=f"{updated}/{len(body.user_ids)}",
+        detail={
+            "updated": updated,
+            "skipped": skipped,
+            "is_active": body.is_active,
+            "role": body.role,
+            "daily_goal": body.daily_goal,
+        },
+    )
+    return {"ok": True, "updated": updated, "skipped": skipped}
+
+
+# ================================================ 题目用例在线维护
+@router.get("/problems/{problem_id}/testcases", response_model=dict)
+async def admin_list_testcases(problem_id: str, db: DbSession, admin: AdminDep):
+    """管理员看题目的全部用例（含隐藏用例内容——建题后要能核对与修正）。"""
+    from ..judge_service import list_testcases
+
+    problem = await get_problem(db, problem_id)
+    if problem is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "题目不存在")
+    cases = await list_testcases(db, problem_id)
+    return {
+        "problem_id": problem_id,
+        "title": problem.title,
+        "items": [
+            {
+                "id": c.id,
+                "input": c.input_data,
+                "output": c.expected_output,
+                "hidden": c.hidden,
+                "score": c.score,
+            }
+            for c in cases
+        ],
+    }
+
+
+class AdminCasesIn(BaseModel):
+    cases: list[dict[str, str]] = Field(min_length=1, max_length=100)
+    replace: bool = True
+
+
+@router.put("/problems/{problem_id}/testcases", response_model=dict)
+async def admin_replace_testcases(
+    problem_id: str, body: AdminCasesIn, db: DbSession, admin: AdminDep
+):
+    """管理员整批替换用例（题目出完后修正判题数据的日常动作）。"""
+    from ..judge_service import list_all_testcases, replace_testcases
+
+    problem = await get_problem(db, problem_id)
+    if problem is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "题目不存在")
+    for c in body.cases:
+        if not str(c.get("output", "")).strip():
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY, "每个用例的期望输出都不能为空"
+            )
+    old_count = len(await list_all_testcases(db, problem_id))
+    rows = await replace_testcases(
+        db,
+        problem_id,
+        [
+            {
+                "input": c.get("input", ""),
+                "output": c.get("output", ""),
+                "hidden": str(c.get("hidden", "true")).lower() == "true",
+                "score": int(c.get("score", 10) or 10),
+            }
+            for c in body.cases
+        ],
+    )
+    await log_admin_action(
+        db,
+        actor_id=admin.id,
+        actor_name=admin.username,
+        action="problem.testcases",
+        target_type="problem",
+        target_id=problem_id,
+        detail={"old_count": old_count, "new_count": len(rows), "title": problem.title},
+    )
+    return {"ok": True, "problem_id": problem_id, "saved": len(rows), "old_count": old_count}

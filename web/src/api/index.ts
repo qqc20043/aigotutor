@@ -389,6 +389,57 @@ export const adminApi = {
       )
       .then((r) => r.data),
 
+  /** 审计日志（谁在何时对什么做了什么） */
+  adminAudit: (params: { page?: number; size?: number; action?: string; actor?: string } = {}) =>
+    http
+      .get<{
+        total: number
+        items: Array<{
+          id: string
+          actor_name: string
+          action: string
+          action_label: string
+          target_type: string
+          target_id: string
+          detail: Record<string, any>
+          created_at: string
+        }>
+      }>('/admin/audit', { params })
+      .then((r) => r.data),
+
+  /** 批量操作用户 */
+  adminBatchUsers: (body: {
+    user_ids: string[]
+    is_active?: boolean
+    role?: string
+    daily_goal?: number
+  }) =>
+    http
+      .post<{ ok: boolean; updated: number; skipped: Array<{ user_id: string; reason: string }> }>(
+        '/admin/users/batch',
+        body,
+      )
+      .then((r) => r.data),
+
+  /** 查看题目全部用例（含隐藏内容） */
+  adminTestcases: (problemId: string) =>
+    http
+      .get<{
+        problem_id: string
+        title: string
+        items: Array<{ id: string; input: string; output: string; hidden: boolean; score: number }>
+      }>(`/admin/problems/${problemId}/testcases`)
+      .then((r) => r.data),
+
+  /** 整批替换用例（出题后的日常维护） */
+  adminReplaceTestcases: (problemId: string, cases: Array<Record<string, unknown>>) =>
+    http
+      .put<{ ok: boolean; saved: number; old_count: number }>(
+        `/admin/problems/${problemId}/testcases`,
+        { cases, replace: true },
+      )
+      .then((r) => r.data),
+
   /** 站内公告：username 留空 = 全员广播 */
   adminAnnounce: (body: { title: string; body?: string; link?: string; username?: string }) =>
     http.post<{ ok: boolean; sent: number; scope: string }>('/admin/announce', body).then((r) => r.data),

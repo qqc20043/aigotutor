@@ -287,10 +287,143 @@ async function sendAnnounce() {
   }
 }
 
+// ---------------- 审计日志 ----------------
+const auditLogs = ref<Array<Record<string, any>>>([])
+const auditTotal = ref(0)
+const auditLoading = ref(false)
+const aQuery = reactive({ page: 1, size: 20, action: '', actor: '' })
+const AUDIT_ACTIONS = [
+  { v: '', l: '全部动作' },
+  { v: 'problem.create', l: '新建题目' },
+  { v: 'problem.update', l: '修改题目' },
+  { v: 'problem.delete', l: '删除题目' },
+  { v: 'problem.testcases', l: '维护用例' },
+  { v: 'user.patch', l: '修改用户' },
+  { v: 'user.reset_password', l: '重置密码' },
+  { v: 'submission.rejudge', l: '重判提交' },
+  { v: 'announce.send', l: '发送公告' },
+  { v: 'users.batch', l: '批量用户' },
+  { v: 'data.cleanup', l: '数据清理' },
+]
+
+async function loadAudit() {
+  auditLoading.value = true
+  try {
+    const res = await adminApi.adminAudit({
+      page: aQuery.page,
+      size: aQuery.size,
+      action: aQuery.action || undefined,
+      actor: aQuery.actor || undefined,
+    })
+    auditLogs.value = res.items
+    auditTotal.value = res.total
+  } catch (e) {
+    ElMessage.error(errorText(e))
+  } finally {
+    auditLoading.value = false
+  }
+}
+
+// ---------------- 批量用户 ----------------
+const selectedUsers = ref<Array<Record<string, any>>>([])
+const batching = ref(false)
+
+function onUserSelection(rows: Array<Record<string, any>>) {
+  selectedUsers.value = rows
+}
+
+async function batchUsers(patch: { is_active?: boolean; role?: string; daily_goal?: number }) {
+  if (!selectedUsers.value.length) {
+    ElMessage.warning('请先勾选用户')
+    return
+  }
+  batching.value = true
+  try {
+    const res = await adminApi.adminBatchUsers({
+      user_ids: selectedUsers.value.map((u) => u.id),
+      ...patch,
+    })
+    ElMessage.success(`已更新 ${res.updated} 人${res.skipped.length ? `，跳过 ${res.skipped.length} 人` : ''}`)
+    await load()
+    await loadAudit()
+  } catch (e) {
+    ElMessage.error(errorText(e))
+  } finally {
+    batching.value = false
+  }
+}
+
+// ---------------- 题目用例编辑 ----------------
+const casesVisible = ref(false)
+const casesLoading = ref(false)
+const casesSaving = ref(false)
+const casesProblem = ref<Record<string, any> | null>(null)
+const casesText = ref('')
+
+async function openCases(row: Record<string, any>) {
+  casesProblem.value = row
+  casesVisible.value = true
+  casesLoading.value = true
+  try {
+    const res = await adminApi.adminTestcases(row.id)
+    casesText.value = res.items
+      .map((c) => `输入 ${c.input.trimEnd()}\n输出 ${c.output.trimEnd()}`)
+      .join('\n\n')
+  } catch (e) {
+    ElMessage.error(errorText(e))
+  } finally {
+    casesLoading.value = false
+  }
+}
+
+const CASE_SEP = /\n\s*\n/
+
+function parseCasesText(text: string): Array<Record<string, unknown>> {
+  const out: Array<Record<string, unknown>> = []
+  for (const block of text.split(CASE_SEP)) {
+    const lines = block.trim().split('\n')
+    const inIdx = lines.findIndex((l) => l.startsWith('输入'))
+    const outIdx = lines.findIndex((l) => l.startsWith('输出'))
+    if (inIdx < 0 || outIdx < 0) continue
+    const input = lines
+      .slice(inIdx, outIdx)
+      .map((l, i) => (i === 0 ? l.replace(/^输入\s*/, '') : l))
+      .join('\n')
+    const output = lines
+      .slice(outIdx)
+      .map((l, i) => (i === 0 ? l.replace(/^输出\s*/, '') : l))
+      .join('\n')
+    out.push({ input: input + '\n', output: output + '\n', hidden: 'true' })
+  }
+  return out
+}
+
+async function saveCases() {
+  if (!casesProblem.value) return
+  const cases = parseCasesText(casesText.value)
+  if (!cases.length) {
+    ElMessage.warning('至少需要一个「输入 / 输出」用例')
+    return
+  }
+  casesSaving.value = true
+  try {
+    const res = await adminApi.adminReplaceTestcases(casesProblem.value.id, cases)
+    ElMessage.success(`已保存 ${res.saved} 个用例（原 ${res.old_count} 个）`)
+    casesVisible.value = false
+    await loadProblems()
+    await loadAudit()
+  } catch (e) {
+    ElMessage.error(errorText(e))
+  } finally {
+    casesSaving.value = false
+  }
+}
+
 onMounted(() => {
   void load()
   void loadProblems()
   void loadSubmissions()
+  void loadAudit()
 })
 </script>
 
@@ -388,11 +521,27 @@ onMounted(() => {
           />
           <el-button size="small" @click="query.page = 1; load()">搜索</el-button>
           <div class="flex-spacer" />
+          <template v-if="selectedUsers.length">
+            <span class="stat-label">已选 {{ selectedUsers.length }} 人</span>
+            <el-button size="small" :loading="batching" @click="batchUsers({ is_active: true })">
+              批量启用
+            </el-button>
+            <el-button size="small" type="danger" plain :loading="batching" @click="batchUsers({ is_active: false })">
+              批量停用
+            </el-button>
+            <el-button size="small" :loading="batching" @click="batchUsers({ role: 'admin' })">
+              升为管理员
+            </el-button>
+            <el-button size="small" :loading="batching" @click="batchUsers({ role: 'user' })">
+              降为普通用户
+            </el-button>
+          </template>
           <span class="stat-label">共 {{ userTotal }} 人</span>
         </div>
       </template>
 
-      <el-table :data="users" size="small" stripe>
+      <el-table :data="users" size="small" stripe @selection-change="onUserSelection">
+        <el-table-column type="selection" width="42" />
         <el-table-column prop="username" label="用户名" min-width="140" />
         <el-table-column prop="nickname" label="昵称" min-width="120" />
         <el-table-column label="角色" width="100">
@@ -571,9 +720,10 @@ onMounted(() => {
         <el-table-column prop="submit_count" label="提交" width="70" />
         <el-table-column prop="accepted_count" label="AC" width="70" />
         <el-table-column prop="time_limit_ms" label="时限(ms)" width="90" />
-        <el-table-column label="操作" width="140" fixed="right">
+        <el-table-column label="操作" width="200" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" size="small" @click="$router.push(`/problems/${row.id}`)">预览</el-button>
+            <el-button link type="warning" size="small" @click="openCases(row)">用例</el-button>
             <el-button link type="danger" size="small" @click="removeProblem(row)">删除</el-button>
           </template>
         </el-table-column>
@@ -659,6 +809,69 @@ onMounted(() => {
         </el-table>
       </template>
     </el-dialog>
+
+    <!-- 用例编辑器 -->
+    <el-dialog v-model="casesVisible" :title="`测试用例 · ${casesProblem?.title ?? ''}`" width="720px">
+      <el-alert type="info" :closable="false" style="margin-bottom: 10px"
+        title="格式：每个用例写「输入 xxx」与「输出 xxx」两行，用例之间空一行。保存后立即生效（可配合提交管理里的重判）。" />
+      <el-input
+        v-model="casesText"
+        type="textarea"
+        :rows="14"
+        class="mono"
+        v-loading="casesLoading"
+        placeholder="输入 1 2&#10;输出 3&#10;&#10;输入 5 5&#10;输出 10"
+      />
+      <template #footer>
+        <el-button @click="casesVisible = false">取消</el-button>
+        <el-button type="primary" :loading="casesSaving" @click="saveCases">保存全部用例</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 审计日志 -->
+    <el-card class="page-card" shadow="never">
+      <template #header>
+        <div style="display: flex; align-items: center; gap: 10px">
+          <span>操作审计</span>
+          <el-tag size="small" effect="plain" type="info">共 {{ auditTotal }} 条</el-tag>
+          <div class="flex-spacer" />
+          <el-select v-model="aQuery.action" size="small" style="width: 130px" @change="aQuery.page = 1; loadAudit()">
+            <el-option v-for="a in AUDIT_ACTIONS" :key="a.v" :value="a.v" :label="a.l" />
+          </el-select>
+          <el-input v-model="aQuery.actor" placeholder="操作人" size="small" style="width: 120px" clearable />
+          <el-button size="small" @click="aQuery.page = 1; loadAudit()">筛选</el-button>
+        </div>
+      </template>
+      <el-table :data="auditLogs" size="small" stripe v-loading="auditLoading">
+        <el-table-column label="时间" width="160">
+          <template #default="{ row }">{{ fmtDate(row.created_at) }}</template>
+        </el-table-column>
+        <el-table-column prop="actor_name" label="操作人" width="120" />
+        <el-table-column label="动作" width="120">
+          <template #default="{ row }">
+            <el-tag size="small" effect="plain">{{ row.action_label }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="对象" min-width="180">
+          <template #default="{ row }">
+            <span class="stat-label">{{ row.target_type }} · {{ row.target_id || '-' }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="详情" min-width="240">
+          <template #default="{ row }">
+            <span class="stat-label">{{ JSON.stringify(row.detail).slice(0, 110) }}</span>
+          </template>
+        </el-table-column>
+      </el-table>
+      <el-pagination
+        v-model:current-page="aQuery.page"
+        :page-size="aQuery.size"
+        :total="auditTotal"
+        layout="prev, pager, next"
+        style="margin-top: 10px; justify-content: flex-end"
+        @current-change="loadAudit"
+      />
+    </el-card>
 
     <!-- 公告对话框 -->
     <el-dialog v-model="announceVisible" title="发送站内公告" width="560px">
