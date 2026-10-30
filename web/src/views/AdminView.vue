@@ -191,9 +191,106 @@ async function createProblem() {
   }
 }
 
+// ---------------- 提交管理 ----------------
+const subs = ref<Array<Record<string, any>>>([])
+const subsTotal = ref(0)
+const subsLoading = ref(false)
+const sQuery = reactive({ page: 1, size: 15, username: '', verdict: '' })
+
+async function loadSubmissions() {
+  subsLoading.value = true
+  try {
+    const res = await adminApi.adminSubmissions({
+      page: sQuery.page,
+      size: sQuery.size,
+      username: sQuery.username || undefined,
+      verdict: sQuery.verdict || undefined,
+    })
+    subs.value = res.items
+    subsTotal.value = res.total
+  } catch (e) {
+    ElMessage.error(errorText(e))
+  } finally {
+    subsLoading.value = false
+  }
+}
+
+async function rejudge(row: Record<string, any>) {
+  try {
+    const res = await adminApi.adminRejudge(row.id)
+    ElMessage.success(`重判完成：${res.old_verdict} -> ${res.new_verdict}`)
+    await loadSubmissions()
+  } catch (e) {
+    ElMessage.error(errorText(e))
+  }
+}
+
+// ---------------- 用户详情 ----------------
+const userDetail = ref<Record<string, any> | null>(null)
+const detailVisible = ref(false)
+
+async function openUserDetail(row: Record<string, any>) {
+  try {
+    userDetail.value = await adminApi.adminUserDetail(row.id)
+    detailVisible.value = true
+  } catch (e) {
+    ElMessage.error(errorText(e))
+  }
+}
+
+async function resetPassword(row: Record<string, any>) {
+  try {
+    await ElMessageBox.confirm(`重置 ${row.username} 的密码？旧 token 会立即失效`, '确认', { type: 'warning' })
+  } catch {
+    return
+  }
+  try {
+    const res = await adminApi.adminResetPassword(row.id)
+    await ElMessageBox.alert(
+      `临时密码：${res.temp_password}`,
+      `已重置 ${res.username}`,
+      { confirmButtonText: '我已记录' },
+    )
+  } catch (e) {
+    ElMessage.error(errorText(e))
+  }
+}
+
+// ---------------- 公告推送 ----------------
+const announceVisible = ref(false)
+const announcing = ref(false)
+const announceForm = reactive({ title: '', body: '', link: '', username: '' })
+
+async function sendAnnounce() {
+  if (!announceForm.title.trim()) {
+    ElMessage.warning('公告标题必填')
+    return
+  }
+  announcing.value = true
+  try {
+    const res = await adminApi.adminAnnounce({
+      title: announceForm.title,
+      body: announceForm.body,
+      link: announceForm.link,
+      username: announceForm.username || undefined,
+    })
+    ElMessage.success(res.scope === 'broadcast' ? `已广播给 ${res.sent} 位用户` : '已发送给指定用户')
+    announceVisible.value = false
+    announceForm.title = ''
+    announceForm.body = ''
+    announceForm.link = ''
+    announceForm.username = ''
+  } catch (e) {
+    ElMessage.error(errorText(e))
+  } finally {
+    announcing.value = false
+  }
+}
+
 onMounted(() => {
   void load()
   void loadProblems()
+  void loadSubmissions()
 })
 </script>
 
@@ -332,6 +429,8 @@ onMounted(() => {
             >
               {{ row.is_active ? '停用' : '启用' }}
             </el-button>
+            <el-button link type="primary" size="small" @click="openUserDetail(row)">详情</el-button>
+            <el-button link type="warning" size="small" @click="resetPassword(row)">重置密码</el-button>
           </template>
         </el-table-column>
         <template #empty>
@@ -383,6 +482,56 @@ onMounted(() => {
           <div class="empty-hint">全部题目都配置了测试用例 👍</div>
         </template>
       </el-table>
+    </el-card>
+
+    <!-- 提交管理（全平台） -->
+    <el-card class="page-card" shadow="never">
+      <template #header>
+        <div style="display: flex; align-items: center; gap: 10px">
+          <span>提交管理</span>
+          <el-tag size="small" effect="plain" type="info">共 {{ subsTotal }} 条</el-tag>
+          <div class="flex-spacer" />
+          <el-input v-model="sQuery.username" placeholder="按用户名" size="small" style="width: 140px" clearable />
+          <el-select v-model="sQuery.verdict" placeholder="判定" size="small" style="width: 110px" clearable>
+            <el-option v-for="v in ['AC','WA','TLE','MLE','RE','CE']" :key="v" :value="v" :label="v" />
+          </el-select>
+          <el-button size="small" @click="sQuery.page = 1; loadSubmissions()">筛选</el-button>
+          <el-button size="small" type="primary" plain @click="announceVisible = true">发公告</el-button>
+        </div>
+      </template>
+      <el-table :data="subs" size="small" stripe v-loading="subsLoading">
+        <el-table-column prop="username" label="用户" width="130" />
+        <el-table-column prop="problem_title" label="题目" min-width="160" />
+        <el-table-column label="判定" width="90">
+          <template #default="{ row }">
+            <el-tag size="small" :type="row.verdict === 'AC' ? 'success' : 'danger'" effect="plain">
+              {{ row.verdict }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="用例" width="80">
+          <template #default="{ row }">{{ row.passed_cases }}/{{ row.total_cases }}</template>
+        </el-table-column>
+        <el-table-column prop="language" label="语言" width="80" />
+        <el-table-column prop="runtime_ms" label="耗时(ms)" width="90" />
+        <el-table-column prop="judged_by" label="判定方式" width="100" />
+        <el-table-column label="时间" width="150">
+          <template #default="{ row }">{{ fmtDate(row.created_at) }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="90" fixed="right">
+          <template #default="{ row }">
+            <el-button link type="primary" size="small" @click="rejudge(row)">重判</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <el-pagination
+        v-model:current-page="sQuery.page"
+        :page-size="sQuery.size"
+        :total="subsTotal"
+        layout="prev, pager, next"
+        style="margin-top: 10px; justify-content: flex-end"
+        @current-change="loadSubmissions"
+      />
     </el-card>
 
     <!-- 题目管理（一站式：建题即配用例） -->
@@ -472,6 +621,62 @@ onMounted(() => {
       <template #footer>
         <el-button @click="createVisible = false">取消</el-button>
         <el-button type="primary" :loading="creating" @click="createProblem">创建</el-button>
+      </template>
+    </el-dialog>
+    <!-- 用户详情对话框 -->
+    <el-dialog v-model="detailVisible" title="用户详情" width="680px">
+      <template v-if="userDetail">
+        <el-descriptions :column="2" border size="small">
+          <el-descriptions-item label="用户名">{{ userDetail.username }}</el-descriptions-item>
+          <el-descriptions-item label="昵称">{{ userDetail.nickname }}</el-descriptions-item>
+          <el-descriptions-item label="角色">{{ userDetail.role }}</el-descriptions-item>
+          <el-descriptions-item label="状态">{{ userDetail.is_active ? '正常' : '停用' }}</el-descriptions-item>
+          <el-descriptions-item label="等级">{{ userDetail.level }}</el-descriptions-item>
+          <el-descriptions-item label="每日目标">{{ userDetail.daily_goal }}</el-descriptions-item>
+          <el-descriptions-item label="提交 / AC">
+            {{ userDetail.stats.submissions }} / {{ userDetail.stats.ac_count }}
+          </el-descriptions-item>
+          <el-descriptions-item label="复习项 / 会话">
+            {{ userDetail.stats.review_items }} / {{ userDetail.stats.chat_sessions }}
+          </el-descriptions-item>
+          <el-descriptions-item label="最近登录">{{ userDetail.last_login_at || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="注册时间">{{ fmtDate(userDetail.created_at) }}</el-descriptions-item>
+        </el-descriptions>
+        <el-divider content-position="left">最近 10 次提交</el-divider>
+        <el-table :data="userDetail.recent_submissions" size="small">
+          <el-table-column prop="problem_id" label="题目" min-width="180" />
+          <el-table-column label="判定" width="90">
+            <template #default="{ row }">
+              <el-tag size="small" :type="row.verdict === 'AC' ? 'success' : 'danger'" effect="plain">
+                {{ row.verdict }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="language" label="语言" width="90" />
+          <el-table-column label="时间" width="150">
+            <template #default="{ row }">{{ fmtDate(row.created_at) }}</template>
+          </el-table-column>
+        </el-table>
+      </template>
+    </el-dialog>
+
+    <!-- 公告对话框 -->
+    <el-dialog v-model="announceVisible" title="发送站内公告" width="560px">
+      <el-form label-width="80px">
+        <el-form-item label="标题"><el-input v-model="announceForm.title" /></el-form-item>
+        <el-form-item label="内容">
+          <el-input v-model="announceForm.body" type="textarea" :rows="4" />
+        </el-form-item>
+        <el-form-item label="跳转链接">
+          <el-input v-model="announceForm.link" placeholder="可选，如 /problems" />
+        </el-form-item>
+        <el-form-item label="收件人">
+          <el-input v-model="announceForm.username" placeholder="留空 = 全员广播" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="announceVisible = false">取消</el-button>
+        <el-button type="primary" :loading="announcing" @click="sendAnnounce">发送</el-button>
       </template>
     </el-dialog>
   </div>

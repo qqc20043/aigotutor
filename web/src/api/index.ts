@@ -346,6 +346,52 @@ export const adminApi = {
 
   adminPatchProblem: (id: string, body: Record<string, unknown>) =>
     http.patch<{ ok: boolean; updated: string[] }>(`/admin/problems/${id}`, body).then((r) => r.data),
+
+  /** 全平台提交管理（管理员视角） */
+  adminSubmissions: (params: { page?: number; size?: number; username?: string; verdict?: string } = {}) =>
+    http
+      .get<{
+        total: number
+        items: Array<{
+          id: string
+          username: string
+          problem_id: string
+          problem_title: string
+          language: string
+          verdict: string
+          passed_cases: number
+          total_cases: number
+          runtime_ms: number
+          judged_by: string
+          created_at: string
+          code_preview: string
+        }>
+      }>('/admin/submissions', { params })
+      .then((r) => r.data),
+
+  /** 管理员重判 */
+  adminRejudge: (submissionId: string) =>
+    http
+      .post<{ ok: boolean; old_verdict: string; new_verdict: string }>(
+        `/admin/submissions/${submissionId}/rejudge`,
+      )
+      .then((r) => r.data),
+
+  /** 单用户档案 */
+  adminUserDetail: (userId: string) =>
+    http.get<Record<string, any>>(`/admin/users/${userId}`).then((r) => r.data),
+
+  /** 重置用户密码（返回一次性临时密码） */
+  adminResetPassword: (userId: string) =>
+    http
+      .post<{ ok: boolean; username: string; temp_password: string; note: string }>(
+        `/admin/users/${userId}/reset-password`,
+      )
+      .then((r) => r.data),
+
+  /** 站内公告：username 留空 = 全员广播 */
+  adminAnnounce: (body: { title: string; body?: string; link?: string; username?: string }) =>
+    http.post<{ ok: boolean; sent: number; scope: string }>('/admin/announce', body).then((r) => r.data),
 }
 
 // ------------------------------------------------------------ ⑪ 对话式辅导

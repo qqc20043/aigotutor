@@ -115,3 +115,105 @@ async def test_admin_problems_requires_admin(client):
         json={"title": "x", "statement": "y"},
     )
     assert r.status_code == 403
+
+
+# ==================================================== 后台补齐：提交/用户/公告
+async def test_admin_submissions_and_rejudge(client):
+    """全平台提交列表 + 管理员重判（用例更新后历史结果可刷新）。"""
+    ta, ts = await _admin_and_student(client)
+    H = {"Authorization": f"Bearer {ta}"}
+    pid = (
+        await client.post(
+            "/api/admin/problems",
+            headers=H,
+            json={
+                "title": "重判题",
+                "statement": "a+b",
+                "testcases": [{"input": "1 2\n", "output": "3\n"}],
+            },
+        )
+    ).json()["id"]
+    # 学生先交错误代码
+    sub = (
+        await client.post(
+            "/api/submissions",
+            headers={"Authorization": f"Bearer {ts}"},
+            json={"problem_id": pid, "language": "python", "code": "print(0)"},
+        )
+    ).json()
+    assert sub["verdict"] == "WA"
+    sid = sub["submission"]["id"]
+
+    lst = (await client.get("/api/admin/submissions?page=1&size=10", headers=H)).json()
+    assert lst["total"] >= 1
+    row = next(i for i in lst["items"] if i["id"] == sid)
+    assert row["username"] and row["problem_title"] == "重判题"
+
+    # 换一份正确代码的提交 → 重判应变成 AC（验证重判真执行沙箱）
+    good = (
+        await client.post(
+            "/api/submissions",
+            headers={"Authorization": f"Bearer {ts}"},
+            json={
+                "problem_id": pid,
+                "language": "python",
+                "code": "a,b=map(int,input().split())\nprint(a+b)",
+            },
+        )
+    ).json()
+    assert good["verdict"] == "AC"
+    r = await client.post(f"/api/admin/submissions/{good['submission']['id']}/rejudge", headers=H)
+    assert r.status_code == 200 and r.json()["new_verdict"] == "AC"
+
+
+async def test_admin_user_detail_and_reset_password(client):
+    ta, ts = await _admin_and_student(client)
+    H = {"Authorization": f"Bearer {ta}"}
+    me = (await client.get("/api/auth/me", headers={"Authorization": f"Bearer {ts}"})).json()
+    uid = me["id"]
+
+    d = (await client.get(f"/api/admin/users/{uid}", headers=H)).json()
+    assert d["username"] == me["username"]
+    assert "stats" in d and "recent_submissions" in d
+
+    r = await client.post(f"/api/admin/users/{uid}/reset-password", headers=H)
+    assert r.status_code == 200
+    temp = r.json()["temp_password"]
+    assert temp
+    # 旧 token 已失效（token_version+1）→ 401
+    old = await client.get("/api/auth/me", headers={"Authorization": f"Bearer {ts}"})
+    assert old.status_code == 401
+    # 临时密码可登录
+    lg = await client.post("/api/auth/login", json={"username": me["username"], "password": temp})
+    assert lg.status_code == 200
+
+
+async def test_admin_announce_broadcast_and_single(client):
+    ta, ts = await _admin_and_student(client)
+    H = {"Authorization": f"Bearer {ta}"}
+    me = (await client.get("/api/auth/me", headers={"Authorization": f"Bearer {ts}"})).json()
+
+    # 定向单人
+    r = await client.post(
+        "/api/admin/announce",
+        headers=H,
+        json={"title": "题库更新", "body": "新增 5 道线段树题", "username": me["username"]},
+    )
+    assert r.status_code == 200 and r.json()["sent"] == 1
+    notes = (
+        await client.get("/api/notifications", headers={"Authorization": f"Bearer {ts}"})
+    ).json()
+    items = notes.get("items") or notes if isinstance(notes, list) else notes.get("items", [])
+    assert any("题库更新" in str(n) for n in items), "用户应收到公告"
+
+    # 全员广播
+    r = await client.post(
+        "/api/admin/announce", headers=H, json={"title": "系统维护", "body": "今晚 22:00 停机"}
+    )
+    assert r.status_code == 200 and r.json()["scope"] == "broadcast" and r.json()["sent"] >= 2
+
+    # 非管理员 403
+    r = await client.post(
+        "/api/admin/announce", headers={"Authorization": f"Bearer {ts}"}, json={"title": "x"}
+    )
+    assert r.status_code == 403

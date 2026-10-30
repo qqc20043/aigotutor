@@ -292,3 +292,225 @@ async def admin_patch_problem(
         setattr(problem, k, v)
     await db.flush()
     return {"ok": True, "problem_id": problem_id, "updated": list(updates)}
+
+
+# ================================================ 提交管理（全平台视角）
+class AdminVerdictIn(BaseModel):
+    pass
+
+
+class AnnounceIn(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+    body: str = Field(default="", max_length=2000)
+    link: str = Field(default="", max_length=200)
+    username: str = Field(default="", description="留空=全员广播")
+
+
+@router.get("/submissions", response_model=dict)
+async def admin_list_submissions(
+    db: DbSession,
+    admin: AdminDep,
+    page: PageDep,
+    username: str = "",
+    verdict: str = "",
+    problem_id: str = "",
+):
+    """全平台提交管理：按用户/判定/题目筛选（管理员视角，含代码）。"""
+    from sqlalchemy import func, select
+
+    from ..models import Problem, Submission, User
+
+    stmt = (
+        select(Submission, User.username, Problem.title)
+        .join(User, User.id == Submission.user_id)
+        .join(Problem, Problem.id == Submission.problem_id)
+    )
+    count_stmt = (
+        select(func.count()).select_from(Submission).join(User, User.id == Submission.user_id)
+    )
+    if username:
+        stmt = stmt.where(User.username.contains(username))
+        count_stmt = count_stmt.where(User.username.contains(username))
+    if verdict:
+        stmt = stmt.where(Submission.verdict == verdict)
+        count_stmt = count_stmt.where(Submission.verdict == verdict)
+    if problem_id:
+        stmt = stmt.where(Submission.problem_id == problem_id)
+        count_stmt = count_stmt.where(Submission.problem_id == problem_id)
+    total = int((await db.execute(count_stmt)).scalar() or 0)
+    rows = (
+        await db.execute(
+            stmt.order_by(Submission.created_at.desc()).offset(page.offset).limit(page.size)
+        )
+    ).all()
+    return {
+        "total": total,
+        "items": [
+            {
+                "id": sub.id,
+                "username": uname,
+                "problem_id": sub.problem_id,
+                "problem_title": ptitle,
+                "language": sub.language,
+                "verdict": sub.verdict,
+                "passed_cases": sub.passed_cases,
+                "total_cases": sub.total_cases,
+                "runtime_ms": sub.runtime_ms,
+                "judged_by": sub.judged_by,
+                "created_at": sub.created_at,
+                "code_preview": (sub.code or "")[:300],
+            }
+            for sub, uname, ptitle in rows
+        ],
+    }
+
+
+@router.post("/submissions/{submission_id}/rejudge", response_model=dict)
+async def admin_rejudge(submission_id: str, db: DbSession, admin: AdminDep):
+    """管理员重判（题库用例更新后，历史提交结果可能过期）。"""
+    from ..judge_service import judge_submission_in_sandbox
+    from ..models import Submission
+
+    sub = await db.get(Submission, submission_id)
+    if sub is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "提交不存在")
+    problem = await get_problem(db, sub.problem_id)
+    if problem is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "题目不存在")
+    fields = await judge_submission_in_sandbox(db, problem, sub.language, sub.code)
+    old = sub.verdict
+    sub.verdict = fields["verdict"]
+    sub.passed_cases = fields["passed_cases"]
+    sub.total_cases = fields["total_cases"]
+    sub.runtime_ms = fields["runtime_ms"]
+    sub.memory_kb = fields["memory_kb"]
+    sub.failed_case = fields.get("failed_case", "")
+    import json as _json
+
+    sub.judge_detail = _json.dumps(fields.get("judge_detail", {}), ensure_ascii=False)
+    sub.judged_by = "sandbox"
+    await db.flush()
+    return {
+        "ok": True,
+        "submission_id": submission_id,
+        "old_verdict": old,
+        "new_verdict": sub.verdict,
+    }
+
+
+# ================================================ 用户详情
+@router.get("/users/{user_id}", response_model=dict)
+async def admin_user_detail(user_id: str, db: DbSession, admin: AdminDep):
+    """单用户档案：基础信息 + 学习数据 + 最近提交 + 会话统计。"""
+    from sqlalchemy import Integer, func, select
+
+    from ..models import ChatSession, ReviewQueue, Submission, User
+
+    user = await db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "用户不存在")
+    sub_row = (
+        await db.execute(
+            select(
+                func.count(Submission.id),
+                func.sum(func.cast(Submission.verdict == "AC", Integer)),
+            ).where(Submission.user_id == user_id)
+        )
+    ).one()
+    recent = (
+        (
+            await db.execute(
+                select(Submission)
+                .where(Submission.user_id == user_id)
+                .order_by(Submission.created_at.desc())
+                .limit(10)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    review_count = int(
+        (await db.execute(select(func.count()).where(ReviewQueue.user_id == user_id))).scalar() or 0
+    )
+    chat_count = int(
+        (await db.execute(select(func.count()).where(ChatSession.user_id == user_id))).scalar() or 0
+    )
+    return {
+        "id": user.id,
+        "username": user.username,
+        "nickname": user.nickname,
+        "role": user.role,
+        "is_active": user.is_active,
+        "level": user.level,
+        "daily_goal": user.daily_goal,
+        "timezone": user.timezone,
+        "created_at": user.created_at,
+        "last_login_at": user.last_login_at,
+        "stats": {
+            "submissions": int(sub_row[0] or 0),
+            "ac_count": int(sub_row[1] or 0),
+            "review_items": review_count,
+            "chat_sessions": chat_count,
+        },
+        "recent_submissions": [
+            {
+                "id": s.id,
+                "problem_id": s.problem_id,
+                "verdict": s.verdict,
+                "language": s.language,
+                "created_at": s.created_at,
+            }
+            for s in recent
+        ],
+    }
+
+
+@router.post("/users/{user_id}/reset-password", response_model=dict)
+async def admin_reset_password(user_id: str, db: DbSession, admin: AdminDep):
+    """管理员重置用户密码：返回一次性临时密码，并踢下线（token_version+1）。"""
+    import secrets
+
+    from ..models import User
+    from ..security import hash_password
+
+    user = await db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "用户不存在")
+    temp = f"tmp{secrets.token_urlsafe(6)}"
+    user.password_hash = hash_password(temp)
+    user.token_version = int(user.token_version or 0) + 1
+    await db.flush()
+    return {
+        "ok": True,
+        "username": user.username,
+        "temp_password": temp,
+        "note": "请通过安全渠道转交用户；旧 token 已失效，需重新登录",
+    }
+
+
+# ================================================ 公告推送
+@router.post("/announce", response_model=dict)
+async def admin_announce(body: AnnounceIn, db: DbSession, admin: AdminDep):
+    """站内公告/通知：留空 username 时全员广播，否则定向单人。"""
+    from sqlalchemy import select
+
+    from ..models import User
+    from ..operations import create_notification
+
+    if body.username:
+        target = (
+            await db.execute(select(User).where(User.username == body.username))
+        ).scalar_one_or_none()
+        if target is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "用户不存在")
+        targets = [target.id]
+    else:
+        targets = list((await db.execute(select(User.id).where(User.is_active))).scalars().all())
+
+    sent = 0
+    for uid in targets:
+        await create_notification(
+            db, uid, kind="system", title=body.title, body=body.body, link=body.link
+        )
+        sent += 1
+    return {"ok": True, "sent": sent, "scope": "single" if body.username else "broadcast"}
