@@ -8,6 +8,7 @@ import { difficultyType, levelColor, levelText, retentionColor } from '@/utils/f
 
 const router = useRouter()
 const loading = ref(true)
+const loadingSlow = ref(true)
 const mastery = ref<MasteryOverview | null>(null)
 const recommend = ref<RecommendResult | null>(null)
 const roadmap = ref<RoadmapResult | null>(null)
@@ -17,27 +18,35 @@ const judgeInfo = ref<Record<string, any> | null>(null)
 const stats = ref<Record<string, any> | null>(null)
 
 async function load() {
+  // 渐进加载（修复"整页转圈"）：快组（毫秒级）先渲染，LLM 组各自带加载态
+  // ——此前 7 个请求共用一个 loading，最慢的 LLM 调用（缓存过期时 7-60s）
+  // 会绑架整页，用户看到的是全屏转圈。
   loading.value = true
-  try {
-    const [m, r, rm, due, prof, judge, st] = await Promise.allSettled([
-      masteryApi.overview(),
-      recommendApi.next(),
-      recommendApi.roadmap({ weeks: 6 }),
-      reviewApi.due(8),
-      masteryApi.profile(),
-      problemApi.judgeBackend(),
-      agentApi.stats(),
-    ])
-    if (m.status === 'fulfilled') mastery.value = m.value
-    if (r.status === 'fulfilled') recommend.value = r.value
-    if (rm.status === 'fulfilled') roadmap.value = rm.value
-    if (due.status === 'fulfilled') dueList.value = due.value.due
-    if (prof.status === 'fulfilled') profile.value = prof.value
-    if (judge.status === 'fulfilled') judgeInfo.value = judge.value as unknown as Record<string, any>
-    if (st.status === 'fulfilled') stats.value = st.value
-  } finally {
-    loading.value = false
-  }
+  loadingSlow.value = true
+  const fast = Promise.allSettled([
+    reviewApi.due(8),
+    masteryApi.profile(),
+    problemApi.judgeBackend(),
+    agentApi.stats(),
+  ])
+  const slow = Promise.allSettled([
+    masteryApi.overview(),
+    recommendApi.next(),
+    recommendApi.roadmap({ weeks: 6 }),
+  ])
+
+  const [due, prof, judge, st] = await fast
+  if (due.status === 'fulfilled') dueList.value = due.value.due
+  if (prof.status === 'fulfilled') profile.value = prof.value
+  if (judge.status === 'fulfilled') judgeInfo.value = judge.value as unknown as Record<string, any>
+  if (st.status === 'fulfilled') stats.value = st.value
+  loading.value = false // 快组就绪：首屏立即可用
+
+  const [m, r, rm] = await slow
+  if (m.status === 'fulfilled') mastery.value = m.value
+  if (r.status === 'fulfilled') recommend.value = r.value
+  if (rm.status === 'fulfilled') roadmap.value = rm.value
+  loadingSlow.value = false
 }
 
 async function goPractice(problemId: string) {
@@ -147,7 +156,7 @@ onMounted(() => {
     <el-row :gutter="16">
       <!-- 推荐 -->
       <el-col :xs="24" :md="12">
-        <el-card class="page-card" shadow="never">
+        <el-card class="page-card" shadow="never" v-loading="loadingSlow" element-loading-text="AI 分析中…">
           <template #header>
             <div class="card-head">
               <span>下一题推荐</span>
@@ -248,7 +257,7 @@ onMounted(() => {
 
       <!-- 路线图 -->
       <el-col :xs="24" :md="12">
-        <el-card class="page-card" shadow="never">
+        <el-card class="page-card" shadow="never" v-loading="loadingSlow" element-loading-text="AI 分析中…">
           <template #header>
             <div class="card-head">
               <span>学习路线图</span>
