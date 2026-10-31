@@ -42,7 +42,9 @@ def test_docker_ok_true_when_info_succeeds(backend):
     import subprocess
 
     with patch("shutil.which", return_value="/usr/bin/docker"):
-        with patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, b"", b"")) as m:
+        with patch(
+            "subprocess.run", return_value=subprocess.CompletedProcess([], 0, b"", b"")
+        ) as m:
             assert backend._docker_ok() is True
             assert m.call_args.args[0][1] == "info"
             assert m.call_args.kwargs.get("timeout") == DOCKER_PROBE_TIMEOUT
@@ -104,7 +106,11 @@ async def test_judge_ie_when_docker_unavailable(backend):
     """Docker 不可用必须判 IE 并说明原因（不静默降级到本机执行）。"""
     with patch.object(backend, "_docker_ok", return_value=False):
         result = await backend.judge(
-            JudgeRequest(language="python", code="print(1)", cases=[TestCase(id="c1", input_data="", expected_output="1")])
+            JudgeRequest(
+                language="python",
+                code="print(1)",
+                cases=[TestCase(id="c1", input_data="", expected_output="1")],
+            )
         )
     assert result.verdict == "IE"
     assert "Docker" in result.message or "docker" in result.message
@@ -146,7 +152,9 @@ async def test_judge_happy_path_all_cases_pass(backend, tmp_path):
     """编译成功 + 两个用例输出匹配 -> AC，逐用例结果正确。"""
     script = [(0, "", ""), (0, "3\n", ""), (0, "300\n", "")]
     with patch.object(backend, "_docker_ok", return_value=True):
-        with patch.object(backend, "_exec", side_effect=lambda cmd, timeout, stdin="": script.pop(0)):
+        with patch.object(
+            backend, "_exec", side_effect=lambda cmd, timeout, stdin="": script.pop(0)
+        ):
             result = await backend.judge(
                 JudgeRequest(
                     language="python",
@@ -166,7 +174,9 @@ async def test_judge_first_case_fails_verdict_wa(backend, tmp_path):
     """任一用例不匹配 -> 整体 WA（首个失败用例的 verdict 决定整体）。"""
     script = [(0, "", ""), (0, "2\n", ""), (0, "999\n", "")]
     with patch.object(backend, "_docker_ok", return_value=True):
-        with patch.object(backend, "_exec", side_effect=lambda cmd, timeout, stdin="": script.pop(0)):
+        with patch.object(
+            backend, "_exec", side_effect=lambda cmd, timeout, stdin="": script.pop(0)
+        ):
             result = await backend.judge(
                 JudgeRequest(
                     language="python",
