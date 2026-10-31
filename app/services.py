@@ -841,7 +841,7 @@ async def state_timeline(db: AsyncSession, user_id: str, limit: int = 60) -> lis
 
 # ============================================================ 后台任务表
 async def persist_task(db: AsyncSession, data: dict[str, Any]) -> BackgroundTask:
-    """写入/更新后台任务记录（幂等 upsert）。
+    """写入/更新后台任务记录（幂等 upsert + 写锁重试）。
 
     为什么不能"先 db.get 再决定 insert/update"：
     压测暴露了这个竞态 —— 同一任务的 pending 与 running 两次写入几乎同时到达，
@@ -850,6 +850,11 @@ async def persist_task(db: AsyncSession, data: dict[str, Any]) -> BackgroundTask
 
     正确做法：用数据库的 upsert 语义（INSERT ... ON CONFLICT DO UPDATE），
     把"存在则更新"交给数据库原子完成，而不是应用层先查后写。
+
+    再加一层写锁重试（压测 202 并发 pipeline 实测抓到）：busy_timeout=5s
+    在 CI runner 上也可能不够，INSERT 撞 "database is locked" 会以 500
+    打到用户脸上。这里对 OperationalError 退避重试（最坏 ~1.4s），重试
+    仍失败才向上抛。
     """
     task_id = data.get("id", "")
     if not task_id:
@@ -869,13 +874,29 @@ async def persist_task(db: AsyncSession, data: dict[str, Any]) -> BackgroundTask
     except Exception:
         pass
 
-    if dialect == "sqlite":
-        await _upsert_task_sqlite(db, task_id, data)
-    else:
-        # 其他数据库（MySQL/Postgres）：先更新、未命中再插入并容忍并发冲突。
-        await _upsert_task_generic(db, task_id, data)
+    # 写锁重试：202 并发 pipeline 提交时 INSERT 撞 "database is locked"
+    # （busy_timeout 5s 在 CI runner 上也可能不够）。退避 0.2/0.4/0.8s，
+    # 最坏 ~1.4s；注意重试前必须回滚本次失败语句，否则 session 处于
+    # "失败待回滚"状态，后续 execute 全部报 InternalError。
+    import asyncio as _asyncio
 
-    await db.flush()
+    from sqlalchemy.exc import OperationalError as _OpError
+
+    for attempt in range(3):
+        try:
+            if dialect == "sqlite":
+                await _upsert_task_sqlite(db, task_id, data)
+            else:
+                # 其他数据库（MySQL/Postgres）：先更新、未命中再插入并容忍并发冲突。
+                await _upsert_task_generic(db, task_id, data)
+            await db.flush()
+            break
+        except _OpError as e:
+            if "database is locked" not in str(e) or attempt == 2:
+                raise
+            await db.rollback()
+            await _asyncio.sleep(0.2 * (2**attempt))
+
     row = await db.get(BackgroundTask, task_id)
     return row if row is not None else _build_task(data)
 
