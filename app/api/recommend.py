@@ -66,7 +66,7 @@ async def recommend_next_api(
     memory = await memory_block_for(db, user.id)
     result = await recommend_next(
         user.id,
-        cfg,
+        {**cfg, "timeout": 20},
         candidates=candidates,
         mastery=mastery,
         recent_problem_ids=recent_ids,
@@ -137,7 +137,7 @@ async def roadmap_api(
     profiles = await get_mastery(db, user.id)
     result = await build_roadmap(
         user.id,
-        cfg,
+        {**cfg, "timeout": 20},  # 概览页在线等：LLM 慢时 20s 内降级规则引擎
         tags=[
             {
                 "id": t.id,

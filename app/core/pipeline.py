@@ -59,6 +59,7 @@ def _ctx(
         data.pop(reserved, None)
     return AgentContext(
         user_id=user_id,
+        timeout=float(config.get("timeout", 0) or 0),
         provider=config.get("provider", "mock"),
         model=config.get("model", "mock-1"),
         base_url=config.get("base_url", ""),

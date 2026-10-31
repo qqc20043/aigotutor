@@ -75,6 +75,8 @@ class CoachContext:
     history: list[ChatTurn] = field(default_factory=list)
     # 调用方自定义的附加背景块（如面试官需要的"最近提交结果"），独立 system 块注入
     extra: str = ""
+    # 本次调用的 LLM 超时覆盖（秒）：0 = 用全局 LLM_TIMEOUT
+    timeout: float = 0
 
 
 @dataclass
@@ -201,6 +203,8 @@ async def coach_reply(
         str(config.get("api_key", "")),
     )
     messages = build_messages(ctx, user_message, strength)
+    # ctx.timeout 优先（概览页等在线场景传短超时快速降级），0 用全局默认
+    effective_timeout = ctx.timeout or float(config.get("timeout", 0) or 0) or settings.LLM_TIMEOUT
     try:
         result = await asyncio.wait_for(
             provider.complete_chat(
@@ -208,7 +212,7 @@ async def coach_reply(
                 str(config.get("model", "")),
                 temperature=float(config.get("temperature", 0.3)),
             ),
-            timeout=settings.LLM_TIMEOUT,
+            timeout=effective_timeout,
         )
         text = (result.text or "").strip()
         if not text:

@@ -225,3 +225,32 @@ async def test_intervention_plan_bad_json_degrades(monkeypatch):
     item = {"title": "t", "tags": [], "lapses": 1, "weakest_mastery": 50.0}
     plan = await practice.intervention_plan(CONFIG, item, "")
     assert plan["degraded"] is True
+
+
+# ==================================================== 每次调用超时覆盖
+async def test_agent_ctx_timeout_overrides_default(monkeypatch):
+    """AgentContext.timeout=20 时，LLM 卡 30s 也应在 20s 内降级（不再等 60s×重试）。"""
+    import asyncio
+    import time
+
+    class SlowProvider:
+        """complete_chat 睡 30s 才返回——比 20s 超时长。"""
+
+        async def complete_chat(self, messages, model, **kw):
+            await asyncio.sleep(30)
+            raise RuntimeError("不应等到这里")
+
+        async def stream_chat(self, messages, model, **kw):
+            yield "x"
+            return
+
+    monkeypatch.setattr("app.core.providers.build_provider", lambda *a, **kw: SlowProvider())
+    ctx = CoachContext(
+        problem={"title": "t", "statement": "s", "tags": ["模拟"], "difficulty": "入门"}
+    )
+    cfg = {**CONFIG, "timeout": 0.5}  # 极短超时验证覆盖生效
+    t0 = time.time()
+    reply = await coach_reply(cfg, ctx, "怎么想", "direction")
+    elapsed = time.time() - t0
+    assert reply.degraded is True, "超时必须降级规则引擎"
+    assert elapsed < 5, f"应在超时后立刻降级（实际 {elapsed:.1f}s）"

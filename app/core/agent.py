@@ -87,6 +87,10 @@ class AgentContext:
     temperature: float = 0.2
     task_id: str = ""
     use_cache: bool = True
+    # 每次调用的超时覆盖（秒）：0 = 用 Agent 类默认（settings.LLM_TIMEOUT）。
+    # 概览页等"用户在线等"的场景传短超时（如 20s），LLM 慢时快速降级
+    # 规则引擎，不让用户盯着转圈几分钟。
+    timeout: float = 0
     # 学习记忆清单（由 core.memory 预聚合，已是"结论"而非历史流水）。
     # 单独一个字段而不是塞进 data：它不参与业务逻辑，只参与 prompt 拼接，
     # 且需要显式控制是否注入（见 BaseAgent.inject_memory）。
@@ -201,7 +205,7 @@ class BaseAgent(Generic[T]):
                         ctx.model,
                         temperature=ctx.temperature,
                     ),
-                    timeout=self.timeout,
+                    timeout=ctx.timeout or self.timeout,
                 )
                 data = self.parse(result.text)
                 data = self.postprocess(data, ctx)
