@@ -41,6 +41,8 @@ jobs:
 
   test:
     name: 测试与覆盖率（Python ${{ matrix.python-version }}）
+    env:
+      COVERAGE_CORE: sysmon
     runs-on: ubuntu-latest
     # task_store 的跨进程镜像用例刻意用真实 Redis（mock 存储层等于没测），
     # 无 Redis 时按设计跳过 —— 上一轮 CI 跳过 10 个恰好让总覆盖率跌破 75%
@@ -82,7 +84,7 @@ jobs:
             --cov=app \
             --cov-report=term-missing \
             --cov-report=xml \
-            --cov-fail-under=75
+            --cov-fail-under=90
 
       - name: 上传覆盖率报告
         if: always()

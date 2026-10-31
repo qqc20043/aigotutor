@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query, status
 
 from ..core import fsrs
 from ..core.memory import memory_block_for
@@ -51,6 +51,16 @@ async def review_mark(body: ReviewMarkIn, db: DbSession, user: UserDep):
     视为修复有效，自动恢复调度；自评"忘了"（rating=1）保持搁置——
     还在修复中，不该回到每日队列继续打击信心。
     """
+    # 题目必须存在：否则 upsert 会 INSERT 一条悬空外键的 review_queue 行
+    # （FK 约束 500，覆盖率收尾探针实测抓到）
+    from sqlalchemy import select as _select
+
+    from ..models import Problem
+
+    if (
+        await db.execute(_select(Problem.id).where(Problem.id == body.problem_id))
+    ).scalar_one_or_none() is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "题目不存在")
     plan = await upsert_review_item(db, user.id, body.problem_id, body.rating)
     if body.rating >= 3:
         from sqlalchemy import update

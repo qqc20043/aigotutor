@@ -441,3 +441,87 @@ async def test_mastery_graph_nodes_and_edges(client):
     # 边的端点必须都是真实节点
     ids = {n["id"] for n in body["nodes"]}
     assert all(e["source"] in ids and e["target"] in ids for e in body["edges"])
+
+
+# ==================================================== 运营/后台覆盖收尾
+async def test_admin_overview_and_trends_full(client):
+    """admin_overview 全路径（586-626 区段）+ 趋势接口。"""
+    from sqlalchemy import select
+
+    from app.db import session_scope
+    from app.models import User as U
+
+    ta = (
+        await client.post(
+            "/api/auth/register",
+            json={"username": f"ov{uuid.uuid4().hex[:6]}", "password": "test123456"},
+        )
+    ).json()["access_token"]
+    me = await client.get("/api/auth/me", headers={"Authorization": f"Bearer {ta}"})
+    async with session_scope() as db:
+        (await db.execute(select(U).where(U.id == me.json()["id"]))).scalar_one().role = "admin"
+    H = {"Authorization": f"Bearer {ta}"}
+    r = await client.get("/api/admin/overview?days=7", headers=H)
+    assert r.status_code == 200
+    body = r.json()
+    for key in ("users", "problems", "submissions", "agents"):
+        assert key in body
+    r = await client.get("/api/admin/trends?days=7", headers=H)
+    assert r.status_code == 200
+    assert r.json()["totals"]["new_users"] >= 2
+
+
+async def test_leaderboard_all_metrics_and_windows(client):
+    """排行榜三种指标与窗口分支。"""
+    r = await client.post(
+        "/api/auth/register",
+        json={"username": f"lb{uuid.uuid4().hex[:6]}", "password": "test123456"},
+    )
+    H = {"Authorization": f"Bearer {r.json()['access_token']}"}
+    for metric in ("ac", "submit"):
+        resp = await client.get(f"/api/leaderboard?metric={metric}&window=all", headers=H)
+        assert resp.status_code == 200
+    resp = await client.get("/api/leaderboard?metric=ac&window=week", headers=H)
+    assert resp.status_code == 200
+
+
+async def test_report_markdown_and_notifications_flow(client):
+    """报告 markdown 生成 + 通知去重/已读/清理分支。"""
+    r = await client.post(
+        "/api/auth/register",
+        json={"username": f"nt{uuid.uuid4().hex[:6]}", "password": "test123456"},
+    )
+    H = {"Authorization": f"Bearer {r.json()['access_token']}"}
+    # 报告 JSON + markdown
+    r = await client.get("/api/report?days=7", headers=H)
+    assert r.status_code == 200
+    md = await client.get("/api/report/markdown?days=7", headers=H)
+    assert md.status_code == 200
+    # 通知提醒（生成复习提醒）
+    r = await client.post("/api/notifications/reminders", headers=H)
+    assert r.status_code in (200, 201)
+    # 通知列表 + 标记已读（含未读筛选分支）
+    notes = await client.get("/api/notifications", headers=H)
+    assert notes.status_code == 200
+    items = notes.json().get("items", [])
+    if items:
+        ids = [i["id"] for i in items]
+        r = await client.post("/api/notifications/read", headers=H, json={"ids": ids})
+        assert r.status_code == 200
+    # 打卡（让报告有数据）
+    r = await client.post("/api/checkin", headers=H, json={"note": "coverage"})
+    assert r.status_code in (200, 201)
+
+
+async def test_import_preview_and_batch_branches(client):
+    """题面导入 preview/batch 分支（洛谷文本协议）。"""
+    r = await client.post(
+        "/api/auth/register",
+        json={"username": f"im{uuid.uuid4().hex[:6]}", "password": "test123456"},
+    )
+    H = {"Authorization": f"Bearer {r.json()['access_token']}"}
+    text = "【题目描述】求两数之和\n【输入描述】两个整数\n【输出描述】和\n【样例输入】1 2\n【样例输出】3\n"
+    r = await client.post("/api/import/preview", headers=H, json={"text": text})
+    assert r.status_code == 200, r.text
+    r = await client.post("/api/import", headers=H, json={"text": text, "tags": ["模拟"]})
+    assert r.status_code in (200, 201)

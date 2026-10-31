@@ -422,7 +422,12 @@ def test_cache_roundtrip_and_stats():
     assert 0 <= stats["hit_rate"] <= 1
 
 
-def test_cache_ttl_expiry():
+def test_cache_ttl_expiry(monkeypatch):
+    """内存后端的 ttl=0 = 立即过期。Redis 的 SETEX 语义不同（max(1,ttl)），
+    本测试钉的是内存后端，需显式切回进程内。"""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "REDIS_URL", "")
     cache_clear()
     key = cache_key("ttl-test")
     set_cache(key, {"x": 1}, ttl=0)

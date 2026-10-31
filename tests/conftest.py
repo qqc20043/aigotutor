@@ -30,6 +30,11 @@ os.environ["AIGOTUTOR_SECRET"] = "test-secret"
 # 累加请求会误触 429，让无关测试以"请求过于频繁"失败。
 # 限流本身由 tests/test_ratelimit.py 显式开启并验证。
 os.environ["AIGOTUTOR_RATE_LIMIT"] = "0"
+# 本地与 CI（test job 挂 redis service）都有 Redis：整会话启用，让
+# cache/lock/redis_client/task_store 的 Redis 路径真实执行。降级路径
+# 测试（test_infra_b）各自显式置空 REDIS_URL，不受影响。无 Redis 时
+# redis_client 会自动降级进程内，测试仍可跑（只是少覆盖 Redis 分支）。
+os.environ.setdefault("AIGOTUTOR_REDIS_URL", "redis://127.0.0.1:6379/0")
 
 atexit.register(lambda: shutil.rmtree(_tmpdir, ignore_errors=True))
 

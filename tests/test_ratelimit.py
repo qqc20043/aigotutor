@@ -31,10 +31,13 @@ def test_different_keys_are_independent():
     assert lim.check("b", 1)[0] is True
 
 
-def test_window_expiry_frees_quota():
-    """窗口过期后额度应恢复（用极小窗口验证，避免测试等待）。"""
+def test_window_expiry_frees_quota(monkeypatch):
+    """窗口过期后额度应恢复（内存后端语义；Redis ZSET 路径由 infra_b 覆盖）。"""
     import time
 
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "REDIS_URL", "")
     lim = RateLimiter(window_seconds=0.15)
     assert lim.check("k", 1)[0] is True
     assert lim.check("k", 1)[0] is False
@@ -42,10 +45,13 @@ def test_window_expiry_frees_quota():
     assert lim.check("k", 1)[0] is True
 
 
-def test_sweep_removes_empty_buckets():
-    """空桶应被清理，避免一次性 IP 把内存撑爆。"""
+def test_sweep_removes_empty_buckets(monkeypatch):
+    """空桶应被清理，避免一次性 IP 把内存撑爆（内存后端语义）。"""
     import time
 
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "REDIS_URL", "")
     lim = RateLimiter(window_seconds=0.1)
     for i in range(20):
         lim.check(f"ip:10.0.0.{i}", 5)
