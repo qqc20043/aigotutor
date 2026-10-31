@@ -235,7 +235,11 @@ class BaseAgent(Generic[T]):
                     attempts=attempt,
                 )
             except TimeoutError:
-                last_kind, last_error = "timeout", f"超时 {self.timeout}s"
+                last_kind, last_error = "timeout", f"超时 {ctx.timeout or self.timeout}s"
+                if ctx.timeout:
+                    # 调用方显式传了短超时 = 在线等，快速降级不重试
+                    # （重试 x3 会把 20s 变 60s，用户盯着转圈）
+                    break
             except ValidationError as e:
                 last_kind, last_error = "bad_json", f"结构校验失败: {str(e)[:160]}"
             except LLMError as e:
