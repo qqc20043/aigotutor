@@ -206,6 +206,7 @@ class BaseAgent(Generic[T]):
                 data = self.parse(result.text)
                 data = self.postprocess(data, ctx)
                 if self.cacheable and ctx.use_cache and key:
+                    # Agent 结果用独立长 TTL（键是内容寻址，数据变 = 键变）
                     set_cache(
                         key,
                         {
@@ -215,7 +216,7 @@ class BaseAgent(Generic[T]):
                             "provider": result.provider,
                             "model": result.model,
                         },
-                        settings.CACHE_TTL_SECONDS,
+                        settings.AGENT_CACHE_TTL_SECONDS,
                     )
                 return AgentResult(
                     agent=self.name,

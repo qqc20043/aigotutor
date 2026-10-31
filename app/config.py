@@ -40,6 +40,11 @@ class Settings:
     # --- 降级与成本控制 ---
     ROUTER_SIMPLE_TOKEN_LIMIT: int = int(_env("AIGOTUTOR_ROUTE_LIMIT", "1200"))
     CACHE_TTL_SECONDS: int = int(_env("AIGOTUTOR_CACHE_TTL", "3600"))
+    # Agent 结果缓存 TTL：默认 1h 会让概览/复习页每小时撞一次 10-60s 的
+    # 真调 LLM（压测实测 ReadTimeout x6）。Agent 缓存键是内容寻址的
+    # （含全部输入），数据变化 = 键变化，长 TTL 无正确性风险——
+    # TTL 在这里只是旧条目的回收周期。
+    AGENT_CACHE_TTL_SECONDS: int = int(_env("AIGOTUTOR_AGENT_CACHE_TTL", "21600"))
 
     # --- 任务 ---
     TASK_POLL_INTERVAL: float = float(_env("AIGOTUTOR_TASK_POLL", "0.3"))
