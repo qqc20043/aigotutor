@@ -405,3 +405,39 @@ async def test_admin_csv_import(client):
         "/api/auth/login", json={"username": "imported_a", "password": "passw0rd123"}
     )
     assert lg.status_code == 200
+
+
+# ==================================================== 知识图谱
+async def test_mastery_graph_nodes_and_edges(client):
+    """图谱：节点=标签（掌握度上色/提交量定大小），边=prereq_ids 先修关系。"""
+    ta, _ts = await _admin_and_student(client)
+    H = {"Authorization": f"Bearer {ta}"}
+
+    # 自建标签 + 先修关系（prereq_ids 指向前缀和）
+    from app.db import session_scope as _ss
+    from app.models import Tag as _Tag
+
+    async with _ss() as db:
+        t_base = _Tag(name="前缀和")
+        t_adv = _Tag(name="线段树")
+        t_alone = _Tag(name="孤立标签")
+        db.add_all([t_base, t_adv, t_alone])
+        await db.flush()
+        t_adv.prereq_ids = f'["{t_base.id}"]'
+        await db.flush()
+        base_id, adv_id, alone_id = t_base.id, t_adv.id, t_alone.id
+
+    r = await client.get("/api/mastery/graph", headers=H)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    # 自建的 3 个标签都在，先修边恰好 1 条（前缀和 -> 线段树）
+    ids = {n["id"] for n in body["nodes"]}
+    assert {base_id, adv_id, alone_id} <= ids
+    assert {"source": base_id, "target": adv_id} in body["edges"]
+    assert body["summary"]["edge_count"] >= 1
+    # 未做过的标签：灰色 + 最小节点
+    node_adv = next(n for n in body["nodes"] if n["id"] == adv_id)
+    assert node_adv["score"] is None and node_adv["color"] == "#c0c4cc"
+    # 边的端点必须都是真实节点
+    ids = {n["id"] for n in body["nodes"]}
+    assert all(e["source"] in ids and e["target"] in ids for e in body["edges"])

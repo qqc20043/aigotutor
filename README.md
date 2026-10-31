@@ -26,7 +26,7 @@ python run.py                     # http://127.0.0.1:8000
 
 ```bash
 # 5. 验证
-python -m pytest                      # 393 项单元 + 集成测试
+python -m pytest                      # 394 项单元 + 集成测试
 python -m pytest --cov=app            # 覆盖率（CI 阈值 75%）
 python -m ruff check .                # 代码质量（0 告警）
 python scripts/judge_selftest.py      # 判题沙箱自测（本机可用语言全过，CI 全语言 14/14）
@@ -145,6 +145,14 @@ curl http://127.0.0.1:8000/api/stats/global   # JSON 快照
 - **9 类指标**：HTTP 请求/耗时/在途、Agent 调用/降级/token、判题分布、限流拒绝、运行时长
 - **路径归一**：`/api/problems/{id}` 而非真实 id，避免时序基数爆炸
 - 空指标也输出 HELP/TYPE —— 否则监控系统在数据产生前会报"未知指标"
+
+### 知识图谱（技能树可视化）
+
+掌握度画像页新增力导向知识图谱：**节点 = 知识点**（颜色编码掌握度——红<40 /
+橙<70 / 绿≥70，节点大小 = 练习量，灰色 = 未挑战），**边 = 先修关系**
+（来自 tags.prereq_ids，箭头指向依赖它的进阶知识）。悬停显示掌握度详情、
+邻接高亮显示学习路径，可缩放拖拽。`GET /api/mastery/graph`，数据全部
+派生零新表。
 
 ### 管理后台：趋势图表 / 判题后端状态 / CSV 导入用户
 

@@ -197,6 +197,7 @@ async function recalc() {
 }
 
 function resizeAll() {
+  graphChart.value?.resize()
   radarChart.value?.resize()
   timelineChart.value?.resize()
   curveChart.value?.resize()
@@ -206,13 +207,75 @@ watch(windowDays, () => {
   void load()
 })
 
+// ---- 知识图谱：节点=标签（掌握度上色/提交量定大小），边=先修关系 ----
+const graphEl = ref<HTMLDivElement | null>(null)
+const graphChart = shallowRef<echarts.ECharts | null>(null)
+const graphData = ref<{
+  nodes: Array<{ id: string; name: string; score: number | null; level: string | null; attempts: number; ac_count: number; color: string; symbol_size: number }>
+  edges: Array<{ source: string; target: string }>
+  summary: { tag_count: number; edge_count: number; weak_count: number; unvisited: number }
+} | null>(null)
+
+async function loadGraph() {
+  try {
+    graphData.value = await masteryApi.graph()
+    renderGraph()
+  } catch {
+    /* 图谱加载失败不阻塞画像页 */
+  }
+}
+
+function renderGraph() {
+  if (!graphEl.value || !graphData.value) return
+  if (!graphChart.value) graphChart.value = echarts.init(graphEl.value)
+  const { nodes, edges } = graphData.value
+  graphChart.value.setOption({
+    tooltip: {
+      formatter: (p: any) => {
+        if (p.dataType === 'edge') return `${p.data.sourceName} → ${p.data.targetName}`
+        const n = graphData.value!.nodes.find((x) => x.id === p.data.id)!
+        const score = n.score === null ? '未做过' : `${n.score} 分（${n.level ?? '-'}）`
+        return `<b>${n.name}</b><br/>掌握度：${score}<br/>提交 ${n.attempts} 次 · AC ${n.ac_count}`
+      },
+    },
+    series: [
+      {
+        type: 'graph',
+        layout: 'force',
+        roam: true,
+        draggable: true,
+        force: { repulsion: 320, edgeLength: 120, gravity: 0.12 },
+        label: { show: true, fontSize: 12, color: '#303133' },
+        edgeSymbol: ['none', 'arrow'],
+        edgeSymbolSize: 8,
+        data: nodes.map((n) => ({
+          id: n.id,
+          name: n.name,
+          symbolSize: n.symbol_size,
+          itemStyle: { color: n.color, borderColor: '#fff' },
+          label: { show: n.score !== null || true },
+        })),
+        links: edges.map((e) => ({
+          ...e,
+          sourceName: nodes.find((n) => n.id === e.source)?.name ?? e.source,
+          targetName: nodes.find((n) => n.id === e.target)?.name ?? e.target,
+          lineStyle: { color: '#c0c4cc', width: 1.5, curveness: 0 },
+        })),
+        emphasis: { focus: 'adjacency', lineStyle: { width: 3, color: '#409eff' } },
+      },
+    ],
+  })
+}
+
 onMounted(() => {
   void load()
+  void loadGraph()
   window.addEventListener('resize', resizeAll)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', resizeAll)
+  graphChart.value?.dispose()
   radarChart.value?.dispose()
   timelineChart.value?.dispose()
   curveChart.value?.dispose()
@@ -327,6 +390,29 @@ onBeforeUnmount(() => {
         </el-card>
       </el-col>
     </el-row>
+
+    <!-- 知识图谱：节点=标签（掌握度上色/提交量定大小），边=先修关系 -->
+    <el-card class="page-card" shadow="never">
+      <template #header>
+        <div style="display: flex; align-items: center; gap: 10px">
+          <span>知识图谱（先修关系 · 力导向布局）</span>
+          <template v-if="graphData">
+            <el-tag size="small" effect="plain" type="info">
+              {{ graphData.summary.tag_count }} 个知识点 · {{ graphData.summary.edge_count }} 条先修边
+            </el-tag>
+            <el-tag v-if="graphData.summary.weak_count" size="small" type="danger" effect="plain">
+              薄弱 {{ graphData.summary.weak_count }}
+            </el-tag>
+            <el-tag v-if="graphData.summary.unvisited" size="small" effect="plain">
+              未挑战 {{ graphData.summary.unvisited }}
+            </el-tag>
+          </template>
+          <div class="flex-spacer" />
+          <span style="font-size: 12px; color: #909399">颜色 = 掌握度（红弱/橙中/绿熟），大小 = 练习量；箭头指向依赖它的进阶知识</span>
+        </div>
+      </template>
+      <div ref="graphEl" style="height: 420px" />
+    </el-card>
 
     <el-card class="page-card" shadow="never">
       <template #header>学习状态时间序列</template>

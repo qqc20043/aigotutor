@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Query
+from sqlalchemy import select
 
 from ..core.pipeline import analyze_mastery
 from ..deps import DbSession, ModelConfigDep, UserDep
+from ..models import Tag
 from ..services import (
     build_tag_stats,
     build_tag_stats_by_id,
@@ -29,6 +31,68 @@ async def mastery_profile(db: DbSession, user: UserDep):
     """23/27 掌握度画像（按标签，分数升序 = 最弱在前）。"""
     rows = await get_mastery(db, user.id)
     return [MasteryProfileOut(**r) for r in rows]
+
+
+@router.get("/graph", response_model=dict)
+async def mastery_graph(db: DbSession, user: UserDep):
+    """知识图谱：节点 = 知识点（掌握度上色 / 提交量定大小），边 = 先修关系。
+
+    数据全部派生：掌握度来自 mastery_profiles，先修边来自 tags.prereq_ids
+    （种子数据已含「前缀和→线段树」等关系）。研究共识（知识追踪类产品）：
+    节点+先修边+掌握度上色+力导向布局，前端据此渲染技能树。
+    """
+    import json as _json
+
+    mastery_rows = {r["tag_id"]: r for r in await get_mastery(db, user.id)}
+    tags = (await db.execute(select(Tag).order_by(Tag.name))).scalars().all()
+    id_to_name = {t.id: t.name for t in tags}
+
+    def _color_of(score: float | None) -> str:
+        if score is None:
+            return "#c0c4cc"  # 未做过：灰
+        if score < 40:
+            return "#f56c6c"  # 薄弱：红
+        if score < 70:
+            return "#e6a23c"  # 入门：橙
+        return "#67c23a"  # 熟练：绿
+
+    nodes = []
+    for t in tags:
+        m = mastery_rows.get(t.id)
+        score = float(m["score"]) if m else None
+        attempts = int(m["attempts"]) if m else 0
+        nodes.append(
+            {
+                "id": t.id,
+                "name": t.name,
+                "score": score,
+                "level": m["level"] if m else None,
+                "attempts": attempts,
+                "ac_count": int(m["ac_count"]) if m else 0,
+                "color": _color_of(score),
+                # 节点大小：做过的题越多越大（有数据感），未做过给最小值
+                "symbol_size": min(60, 18 + attempts * 3),
+            }
+        )
+    edges = []
+    for t in tags:
+        try:
+            prereq_ids = _json.loads(t.prereq_ids or "[]")
+        except _json.JSONDecodeError:
+            prereq_ids = []
+        for pid in prereq_ids:
+            if str(pid) in id_to_name:
+                edges.append({"source": str(pid), "target": t.id})
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        "summary": {
+            "tag_count": len(nodes),
+            "edge_count": len(edges),
+            "weak_count": sum(1 for n in nodes if n["score"] is not None and n["score"] < 40),
+            "unvisited": sum(1 for n in nodes if n["score"] is None),
+        },
+    }
 
 
 @router.get("/overview", response_model=MasteryOut)

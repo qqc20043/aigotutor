@@ -191,6 +191,25 @@ export const reviewApi = {
 
 // -------------------------------------------------------------- ⑥ 掌握度
 export const masteryApi = {
+  /** 知识图谱：节点=标签（掌握度上色/提交量定大小），边=先修关系 */
+  graph: () =>
+    http
+      .get<{
+        nodes: Array<{
+          id: string
+          name: string
+          score: number | null
+          level: string | null
+          attempts: number
+          ac_count: number
+          color: string
+          symbol_size: number
+        }>
+        edges: Array<{ source: string; target: string }>
+        summary: { tag_count: number; edge_count: number; weak_count: number; unvisited: number }
+      }>('/mastery/graph')
+      .then((r) => r.data),
+
   overview: (windowDays = 30) =>
     http.get<MasteryOverview>('/mastery/overview', { params: { window_days: windowDays } }).then((r) => r.data),
 
