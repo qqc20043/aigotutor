@@ -44,14 +44,30 @@ async def seed_problems(*, reset: bool = False, verify: bool = False) -> dict:
             return {"error": "用例验证失败，请检查 solver"}
 
     imported, skipped = 0, 0
+    backfilled = 0  # 题解回填
+    sample_fixes = 0  # 双重编码修复
 
     async with session_scope() as db:
         # 已有标题集合
         from app.models import Problem as P
 
-        existing = {r for (r,) in (await db.execute(sa_select(P.title))).all()}
+        rows = (await db.execute(sa_select(P))).scalars().all()
+        existing = {r.title: r for r in rows}
         for prob in PROBLEMS:
-            if prob["title"] in existing:
+            old = existing.get(prob["title"])
+            if old is not None:
+                # 增量语义：跳过已存在题；但官方题解是新能力，给 pack 来源
+                # 且题解为空的旧题回填（不动管理员/用户建的题）
+                if old.source == "pack" and not old.official_solution and prob.get("solution"):
+                    old.official_solution = prob["solution"]
+                    backfilled += 1
+                # 历史版本 seed 双重编码 samples（dumps 后又传给内部再 dumps 的
+                # create_problem）——检测到 str 套 str 就地修复
+                if old.source == "pack" and old.samples and old.samples.startswith('"'):
+                    inner = json.loads(old.samples)
+                    if isinstance(inner, str):
+                        old.samples = inner  # 已是 dumps(list) 的串，剥掉外层引号
+                        sample_fixes += 1
                 skipped += 1
                 continue
             problem = await create_problem(
@@ -62,12 +78,13 @@ async def seed_problems(*, reset: bool = False, verify: bool = False) -> dict:
                     "input_desc": prob["input_desc"],
                     "output_desc": prob["output_desc"],
                     "constraints": prob["constraints"],
-                    "samples": json.dumps(
-                        [{"input": tc[0], "output": tc[1]} for tc in prob["testcases"][:2]],
-                        ensure_ascii=False,
-                    ),
+                    # create_problem 内部会 json.dumps(samples)——必须传 list，
+                    # 传 dumps 过的串会双重序列化（与 admin.py 同一个坑：
+                    # 详情页 loads 一次后仍是 str，pydantic 直接 500）
+                    "samples": [{"input": tc[0], "output": tc[1]} for tc in prob["testcases"][:2]],
                     "source": "pack",
                     "difficulty": prob["difficulty"],
+                    "official_solution": prob["solution"],
                 },
                 tag_names=prob["tags"],
             )
@@ -78,7 +95,12 @@ async def seed_problems(*, reset: bool = False, verify: bool = False) -> dict:
                     {"input": stdin_text, "output": expected, "hidden": True},
                 )
             imported += 1
-    return {"imported": imported, "skipped": skipped}
+    return {
+        "imported": imported,
+        "skipped": skipped,
+        "backfilled": backfilled,
+        "sample_fixes": sample_fixes,
+    }
 
 
 async def main() -> int:
@@ -93,7 +115,10 @@ async def main() -> int:
     if "error" in result:
         print(result["error"])
         return 1
-    print(f"导入 {result['imported']} 道，跳过 {result['skipped']} 道（已存在）")
+    print(
+        f"导入 {result['imported']} 道，跳过 {result['skipped']} 道（已存在），"
+        f"回填题解 {result['backfilled']} 道，修复 samples 编码 {result['sample_fixes']} 道"
+    )
     return 0
 
 

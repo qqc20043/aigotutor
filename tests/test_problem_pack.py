@@ -33,6 +33,12 @@ def test_pack_integrity():
             assert expected.endswith("\n"), f"{p['title']} 期望输出应以换行结尾"
         # 样例展示取前 2 组，需至少有 1 组
         assert len(p["testcases"]) >= 1
+        # 官方题解：三段式齐全 + 至少一段参考代码
+        sol = p.get("solution", "")
+        assert "## 思路" in sol and "## 复杂度" in sol and "## 参考代码" in sol, (
+            f"{p['title']} 题解缺标准段落"
+        )
+        assert "```python" in sol, f"{p['title']} 题解缺参考代码"
 
 
 def test_pack_solvers_match_expected():
@@ -74,6 +80,40 @@ def test_wrap_solver_runs_subprocess():
         )
         assert r.returncode == 0, f"{p['title']} 子进程失败: {r.stderr}"
         assert r.stdout == expected
+
+
+def test_solution_reference_codes_compile():
+    """题解里的每个 ```python 块都必须可编译。"""
+    import re
+
+    for p in PROBLEMS:
+        for i, code in enumerate(re.findall(r"```python\n(.*?)```", p["solution"], re.DOTALL)):
+            compile(code, f"<{p['title']}#code{i}>", "exec")
+
+
+def test_solution_reference_codes_pass_all_testcases():
+    """题解参考代码逐题逐用例真实子进程验证——"参考代码均经沙箱 AC"是硬承诺。
+
+    56 次运行约 3s，换取"官方题解代码一定对"这条产品主张成立。
+    """
+    import re
+    import subprocess
+    import sys
+
+    for p in PROBLEMS:
+        codes = re.findall(r"```python\n(.*?)```", p["solution"], re.DOTALL)
+        assert codes, f"{p['title']} 题解缺参考代码"
+        for stdin_text, expected in p["testcases"]:
+            r = subprocess.run(
+                [sys.executable, "-c", codes[0]],
+                input=stdin_text,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            stdout = r.stdout.replace("\r\n", "\n")  # Windows 子进程 CRLF 归一
+            assert r.returncode == 0, f"{p['title']} 参考代码运行失败: {r.stderr}"
+            assert stdout == expected, f"{p['title']}: got {stdout!r} want {expected!r}"
 
 
 async def _shadow_titles() -> set[str]:
@@ -139,6 +179,7 @@ async def test_seeded_problems_match_pack():
         for row in rows:
             p = pack_by_title[row.title]
             assert row.difficulty == p["difficulty"]
+            assert row.official_solution == p["solution"], f"{row.title} 题解未入库或不一致"
             n_cases = (
                 await db.execute(
                     sa_select(func.count())
@@ -149,6 +190,46 @@ async def test_seeded_problems_match_pack():
             assert n_cases == len(p["testcases"]), (
                 f"{row.title}: 用例数 {n_cases} != {len(p['testcases'])}"
             )
+
+
+async def test_seed_backfills_missing_solutions():
+    """回填语义：pack 来源且题解为空的旧题，重跑 seed 补题解；非 pack 题不动。"""
+    from sqlalchemy import select as sa_select
+
+    from app.db import session_scope
+    from app.models import Problem
+
+    await seed_problems(verify=False)
+    async with session_scope() as db:
+        row = (
+            (
+                await db.execute(
+                    sa_select(Problem).where(
+                        Problem.source == "pack",
+                        Problem.title == PROBLEMS[0]["title"],
+                    )
+                )
+            )
+            .scalars()
+            .one()
+        )
+        row.official_solution = ""  # 模拟"题解能力上线前的旧导入"
+    result = await seed_problems(verify=False)
+    assert result.get("backfilled") == 1, f"应恰好回填 1 道: {result}"
+    async with session_scope() as db:
+        row = (
+            (
+                await db.execute(
+                    sa_select(Problem).where(
+                        Problem.source == "pack",
+                        Problem.title == PROBLEMS[0]["title"],
+                    )
+                )
+            )
+            .scalars()
+            .one()
+        )
+        assert row.official_solution == PROBLEMS[0]["solution"], "回填后题解应恢复"
 
 
 async def test_seeded_problem_judges_ac_in_sandbox():
@@ -198,3 +279,153 @@ def test_solver_sources_do_not_use_forbidden_names():
         for name in ("json", "math", "heapq", "deque"):
             if f"{name}." in src or f"({name}," in src or f"{name})" in src:
                 assert name in allowed_modules
+
+
+# ================================================================ API 门控
+async def _demote_to_user(client) -> None:
+    """把当前登录用户显式降为普通角色。
+
+    register 有"首个用户自动成为管理员"的引导逻辑——单文件跑测试时
+    auth_client 的用户恰好是首个注册者，门控测试必须与注册顺序无关。
+    """
+    from sqlalchemy import select as sa_select
+
+    from app.db import session_scope
+    from app.models import User as UserModel
+
+    me = (await client.get("/api/auth/me")).json()
+    async with session_scope() as db:
+        row = (await db.execute(sa_select(UserModel).where(UserModel.id == me["id"]))).scalar_one()
+        row.role = "user"
+
+
+async def _pack_problem_id() -> str:
+    from sqlalchemy import select as sa_select
+
+    from app.db import session_scope
+    from app.models import Problem
+
+    await seed_problems(verify=False)
+    async with session_scope() as db:
+        row = (
+            await db.execute(sa_select(Problem).where(Problem.title == PROBLEMS[0]["title"]))
+        ).scalar_one()
+        return row.id
+
+
+async def test_solution_gate_locked_before_ac(auth_client):
+    """未 AC：has 标记恒下发，内容为空串（防 devtools 直接看到答案）。"""
+    await _demote_to_user(auth_client)
+    pid = await _pack_problem_id()
+    r = await auth_client.get(f"/api/problems/{pid}")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["has_official_solution"] is True
+    assert body["official_solution"] == "", "未 AC 用户不应拿到题解内容"
+
+
+async def test_solution_gate_unlocked_after_ac(auth_client):
+    """AC 过：详情接口下发题解内容。"""
+    await _demote_to_user(auth_client)
+    from sqlalchemy import select as sa_select
+
+    from app.db import session_scope
+    from app.models import Problem, Submission
+
+    pid = await _pack_problem_id()
+    me = (await auth_client.get("/api/auth/me")).json()
+    async with session_scope() as db:
+        row = (await db.execute(sa_select(Problem).where(Problem.id == pid))).scalar_one()
+        db.add(
+            Submission(
+                user_id=me["id"],
+                problem_id=row.id,
+                language="python",
+                code="# ac",
+                verdict="AC",
+                passed_cases=1,
+                total_cases=1,
+            )
+        )
+    r = await auth_client.get(f"/api/problems/{pid}")
+    body = r.json()
+    assert body["has_official_solution"] is True
+    assert body["official_solution"] == PROBLEMS[0]["solution"], "AC 后应拿到题解内容"
+
+
+async def test_solution_gate_admin_sees_without_ac(client):
+    """管理员免 AC 直接可见（治理视角）。"""
+    import uuid
+
+    from sqlalchemy import select as sa_select
+
+    from app.db import session_scope
+    from app.models import User as UserModel
+
+    name = f"admin{uuid.uuid4().hex[:8]}"
+    r = await client.post("/api/auth/register", json={"username": name, "password": "test123456"})
+    assert r.status_code == 201, r.text
+    async with session_scope() as db:
+        row = (
+            await db.execute(sa_select(UserModel).where(UserModel.username == name))
+        ).scalar_one()
+        row.role = "admin"
+    token = r.json()["access_token"]
+    client.headers["Authorization"] = f"Bearer {token}"
+
+    pid = await _pack_problem_id()
+    r = await client.get(f"/api/problems/{pid}")
+    body = r.json()
+    assert body["has_official_solution"] is True
+    assert body["official_solution"] == PROBLEMS[0]["solution"], "管理员应直接看到题解"
+
+
+async def test_problem_without_solution_has_no_gate(client):
+    """无题解的普通题：has=False、内容空（如管理员手建且未写题解的题）。"""
+    import uuid
+
+    name = f"plain{uuid.uuid4().hex[:8]}"
+    r = await client.post("/api/auth/register", json={"username": name, "password": "test123456"})
+    token = r.json()["access_token"]
+    client.headers["Authorization"] = f"Bearer {token}"
+    r = await client.post(
+        "/api/problems",
+        json={"title": f"无题解题{uuid.uuid4().hex[:6]}", "statement": "随意", "tags": ["模拟"]},
+    )
+    assert r.status_code == 201, r.text
+    pid = r.json()["id"]
+    r = await client.get(f"/api/problems/{pid}")
+    body = r.json()
+    assert body["has_official_solution"] is False
+    assert body["official_solution"] == ""
+
+
+async def test_create_problem_accepts_official_solution(auth_client):
+    """POST /api/problems 透传 official_solution（管理建题可带题解）。"""
+    await _demote_to_user(auth_client)
+    import uuid
+
+    r = await auth_client.post(
+        "/api/problems",
+        json={
+            "title": f"带题解题{uuid.uuid4().hex[:6]}",
+            "statement": "题面",
+            "tags": ["模拟"],
+            "official_solution": "## 思路\n直接输出。",
+        },
+    )
+    assert r.status_code == 201, r.text
+    pid = r.json()["id"]
+    body = (await auth_client.get(f"/api/problems/{pid}")).json()
+    # 创建者未 AC——has=True 但内容被门控；由 admin patch/回填路径保证存储
+    assert body["has_official_solution"] is True
+    assert body["official_solution"] == ""
+    # 管理员视角能确认内容已存储
+    from sqlalchemy import select as sa_select
+
+    from app.db import session_scope
+    from app.models import Problem
+
+    async with session_scope() as db:
+        row = (await db.execute(sa_select(Problem).where(Problem.id == pid))).scalar_one()
+        assert row.official_solution == "## 思路\n直接输出。"

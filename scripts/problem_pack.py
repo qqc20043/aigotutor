@@ -560,3 +560,9 @@ PROBLEMS: list[dict[str, Any]] = [
         [("5 10\n2 2 6 5 4\n6 3 5 4 6\n", "15\n"), ("3 4\n1 2 3\n1 3 4\n", "5\n")],
     ),
 ]
+
+# 把官方题解挂回 PROBLEMS（每题必有题解，缺了是数据 bug，测试会抓）
+from scripts.problem_solutions import SOLUTIONS  # noqa: E402
+
+for _p in PROBLEMS:
+    _p["solution"] = SOLUTIONS[_p["title"]]

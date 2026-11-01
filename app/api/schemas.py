@@ -128,6 +128,10 @@ class ProblemDetail(ProblemOut):
     output_desc: str
     samples: list[Any] = []
     constraints: str
+    # 官方题解门控：has 标记恒下发；内容仅 AC 过或管理员可见，
+    # 未解锁时为空串（防 devtools 直接看到答案）。
+    has_official_solution: bool = False
+    official_solution: str = ""
 
 
 class ProblemCreateIn(BaseModel):
@@ -145,6 +149,7 @@ class ProblemCreateIn(BaseModel):
     time_limit_ms: int = 1000
     memory_limit_mb: int = 256
     auto_annotate: bool = True
+    official_solution: str = ""
 
 
 class TagOut(BaseModel):

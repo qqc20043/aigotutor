@@ -62,6 +62,9 @@ export interface ProblemDetail extends Problem {
   output_desc: string
   samples: Array<Record<string, string>>
   constraints: string
+  /** 官方题解门控：has 标记恒有；内容仅 AC 过或管理员非空（未解锁为空串） */
+  has_official_solution?: boolean
+  official_solution?: string
 }
 
 export interface Page<T> {

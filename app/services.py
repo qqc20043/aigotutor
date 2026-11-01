@@ -169,6 +169,7 @@ async def create_problem(
         source=data.get("source", "local"),
         source_id=data.get("source_id", ""),
         created_by=str(data.get("created_by", "")),
+        official_solution=data.get("official_solution", ""),
         difficulty=data.get("difficulty", "入门"),
         difficulty_score=float(data.get("difficulty_score", 0.0)),
         difficulty_source=data.get("difficulty_source", "rule"),

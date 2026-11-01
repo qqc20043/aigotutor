@@ -70,6 +70,32 @@ def _to_out(problem, tag_names: list[str]) -> ProblemOut:
     )
 
 
+async def _solution_gate(db: DbSession, problem, user) -> dict:
+    """官方题解门控：AC 过或管理员可见内容，否则只给 has 标记。
+
+    题解含完整解法与参考代码——未做题先看到等于剧透，所以内容不进
+    响应（而不是前端隐藏），devtools/抓包也拿不到。
+    """
+    if not problem.official_solution:
+        return {"has_official_solution": False, "official_solution": ""}
+    if user.is_admin:
+        return {"has_official_solution": True, "official_solution": problem.official_solution}
+    from sqlalchemy import select as sa_select
+
+    from ..models import Submission
+
+    ac = await db.execute(
+        sa_select(Submission.id).where(
+            Submission.user_id == user.id,
+            Submission.problem_id == problem.id,
+            Submission.verdict == "AC",
+        )
+    )
+    unlocked = ac.first() is not None
+    content = problem.official_solution if unlocked else ""
+    return {"has_official_solution": True, "official_solution": content}
+
+
 @router.get("", response_model=dict)
 async def list_problems_api(
     db: DbSession,
@@ -115,6 +141,7 @@ async def random_problem_api(db: DbSession, user: UserDep, difficulty: str | Non
         output_desc=problem.output_desc,
         samples=json.loads(problem.samples or "[]"),
         constraints=problem.constraints,
+        **await _solution_gate(db, problem, user),
     )
     return ProblemDetail(**detail)
 
@@ -169,6 +196,7 @@ async def problem_detail(problem_id: str, db: DbSession, user: UserDep):
         output_desc=problem.output_desc,
         samples=json.loads(problem.samples or "[]"),
         constraints=problem.constraints,
+        **await _solution_gate(db, problem, user),
     )
     return ProblemDetail(**detail)
 

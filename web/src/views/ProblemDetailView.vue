@@ -401,6 +401,27 @@ onBeforeUnmount(() => {
             <div class="prose">{{ problem.constraints }}</div>
           </template>
 
+          <template v-if="problem?.has_official_solution && problem?.official_solution">
+            <el-divider content-position="left">官方题解</el-divider>
+            <el-collapse>
+              <el-collapse-item name="sol">
+                <template #title>
+                  <span style="color: #67c23a; font-weight: 600">
+                    ✅ 已解锁（思路 / 复杂度 / 参考代码——参考代码均经真实沙箱判题 AC）
+                  </span>
+                </template>
+                <pre class="code-block solution-md">{{ problem.official_solution }}</pre>
+              </el-collapse-item>
+            </el-collapse>
+          </template>
+          <template v-else-if="problem?.has_official_solution">
+            <el-divider content-position="left">官方题解</el-divider>
+            <div class="solution-locked">
+              🔒 本题有官方题解（思路 / 复杂度 / 参考代码），<b>AC 后自动解锁</b>。
+              先自己想，卡住了可以要 AI 提示，提交通过后再来看会更有收获。
+            </div>
+          </template>
+
           <el-divider content-position="left">
             测试用例（{{ testcases.length }} 个，
             {{ testcases.filter((c) => c.hidden).length }} 个隐藏）
@@ -743,6 +764,26 @@ onBeforeUnmount(() => {
 
 .hint-list li {
   margin-bottom: 6px;
+}
+
+/* 官方题解：等宽渲染（含代码块），锁定态给一个柔和的提示条 */
+.solution-md {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 13px;
+  line-height: 1.8;
+  max-height: 520px;
+  overflow: auto;
+}
+
+.solution-locked {
+  padding: 12px 16px;
+  border: 1px dashed var(--el-border-color);
+  border-radius: 6px;
+  color: #909399;
+  font-size: 13px;
+  line-height: 1.8;
+  background: var(--el-fill-color-lighter);
 }
 </style>
 <style scoped>

@@ -192,6 +192,8 @@ class AdminProblemCreate(BaseModel):
     memory_limit_mb: int = Field(default=256, ge=16, le=1024)
     # 建题即配用例（管理台一站式；否则题进"缺用例"不健康清单）
     testcases: list[dict[str, str]] = Field(default_factory=list, max_length=50)
+    # 官方题解（markdown：思路/复杂度/参考代码）；学生 AC 后在详情页解锁
+    official_solution: str = Field(default="", max_length=50000)
 
 
 class AdminProblemPatch(BaseModel):
@@ -203,6 +205,7 @@ class AdminProblemPatch(BaseModel):
     difficulty: str | None = None
     time_limit_ms: int | None = Field(default=None, ge=100, le=30000)
     memory_limit_mb: int | None = Field(default=None, ge=16, le=1024)
+    official_solution: str | None = Field(default=None, max_length=50000)
 
 
 @router.get("/problems", response_model=dict)
@@ -287,6 +290,7 @@ async def admin_create_problem(body: AdminProblemCreate, db: DbSession, admin: A
         "time_limit_ms": body.time_limit_ms,
         "memory_limit_mb": body.memory_limit_mb,
         "created_by": admin.id,
+        "official_solution": body.official_solution,
     }
     problem = await create_problem(db, data, tag_names=body.tags)
     saved_cases = 0
