@@ -37,7 +37,8 @@ async def _mcp_identity():
     mcp_mod._MCP_USER_ID = None
 
 
-async def _seed_problem(title="两数之和", tags=("模拟",), with_cases=False) -> str:
+async def _seed_problem(title="MCP 自测-两数之和", tags=("模拟",), with_cases=False) -> str:
+    # 标题避开题包（scripts/problem_pack.py）里的经典题名，防止 seed_problems 撞名跳过
     async with session_scope() as db:
         p = await create_problem(
             db, {"title": title, "statement": f"{title}的题面"}, tag_names=list(tags)
@@ -91,7 +92,8 @@ async def test_tool_hint_strength_governance():
 async def test_tool_similar():
     a = await _seed_problem("区间合并A", ("贪心", "排序"))
     b = await _seed_problem("会议室安排B", ("贪心",))
-    out = await mcp_mod._tool_similar(a, 5)
+    # 题库共享（含内置题包），limit 给足窗口，断言只关心相对召回
+    out = await mcp_mod._tool_similar(a, 30)
     ids = [i["problem_id"] for i in out["items"]]
     assert b in ids, "同标签题必须被召回"
     assert a not in ids, "不得返回自身"

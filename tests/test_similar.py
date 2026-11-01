@@ -62,7 +62,9 @@ async def test_similar_ranks_same_tag_first(gallery):
             "tags": [t["name"] for t in tag_map.get(problem.id, [])],
             "difficulty_score": problem.difficulty_score,
         }
-        result = await find_similar(db, source, limit=5)
+        # 题库是共享的（含内置题包），top-5 假设不成立；断言只关心
+        # 「同标签排在部分标签之前」这一相对顺序，limit 给足召回窗口。
+        result = await find_similar(db, source, limit=30)
 
     ids = [i.problem_id for i in result["items"]]
     assert gallery["src"] not in ids, "不得返回自身"
