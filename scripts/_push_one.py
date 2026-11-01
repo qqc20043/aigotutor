@@ -64,9 +64,7 @@ def main() -> int:
     for path in paths:
         # blob 内容必须取 git 对象库（提交时已做 CRLF→LF 归一 / 过滤器处理），
         # 读工作区原始字节会导致 blob SHA 与本地提交不一致 → tree 漂移
-        r = subprocess.run(
-            ["git", "cat-file", "blob", f"{commit_sha}:{path}"], capture_output=True
-        )
+        r = subprocess.run(["git", "cat-file", "blob", f"{commit_sha}:{path}"], capture_output=True)
         if r.returncode != 0:
             print(f"FAIL: 读取 {path} 的 git blob: {r.stderr.decode()[:200]}")
             raise SystemExit(1)
