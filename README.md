@@ -13,6 +13,10 @@ python -m pip install -r requirements.txt
 # 2. 灌入种子数据（12 知识点 + 12 道题 + 演示用户 + 48 条提交记录）
 python -m scripts.seed --reset
 
+# 2.5（推荐）内置经典题包：21 道原创题（DP/图论/数据结构全覆盖，五档难度）
+#         每题自带隐藏用例与官方题解；seed 默认先验证 56 组用例再导入
+python -m scripts.seed_problems
+
 # 3.（可选）构建前端；不构建也能用，只是根路径返回指引而非页面
 cd web && pnpm install && pnpm build && cd ..
 
@@ -26,12 +30,14 @@ python run.py                     # http://127.0.0.1:8000
 
 ```bash
 # 5. 验证
-python -m pytest                      # 394 项单元 + 集成测试
-python -m pytest --cov=app            # 覆盖率（CI 阈值 75%）
+python -m pytest                      # 532 项单元 + 集成测试
+python -m pytest --cov=app            # 覆盖率 93%（CI 门禁 fail-under=90，sysmon 口径）
 python -m ruff check .                # 代码质量（0 告警）
 python scripts/judge_selftest.py      # 判题沙箱自测（本机可用语言全过，CI 全语言 14/14）
-python scripts/check_migrations.py    # Alembic 迁移 9/9
+python scripts/check_migrations.py    # Alembic 迁移 8 个（空库→head→回滚→head）
 python scripts/check_deploy.py        # 部署配置校验
+python -m scripts.verify_pack_judging # 题包 21 题正解真实沙箱判题（应全 AC）
+python -m scripts.verify_solutions    # 官方题解参考代码逐用例验证（应 0 失败）
 python -m scripts.eval_difficulty     # 难度标注一致性评测
 python scripts/eval_agents.py         # Agent 行为评估（11 场景 golden set，mock 离线）
 
@@ -153,6 +159,22 @@ curl http://127.0.0.1:8000/api/stats/global   # JSON 快照
 （来自 tags.prereq_ids，箭头指向依赖它的进阶知识）。悬停显示掌握度详情、
 邻接高亮显示学习路径，可缩放拖拽。`GET /api/mastery/graph`，数据全部
 派生零新表。
+
+### 内置经典题包 + 官方题解（AC 后解锁）
+
+**题包**：`scripts/problem_pack.py` 内置 21 道原创题面的经典算法题
+（爬楼梯 / GCD / 约瑟夫 / 二分 / 前缀和 / 滑窗 / LIS / LCS / 编辑距离 /
+01 背包 / 筛法 / 01 BFS / 岛屿 / N 皇后 / 拓扑 / 线段树……五档难度全覆盖），
+每题自带 2-4 组隐藏用例，期望输出全部由内置正解程序化算出再校验；
+`python -m scripts.seed_problems` 增量导入（按标题跳过、自动回填题解）。
+
+**官方题解**：`problems.official_solution` 存"思路 / 复杂度 / 参考代码"
+三段式 markdown。参考代码不是示意——`tests/test_problem_pack.py` 强制把
+每段题解里的 ```python 块逐题逐用例在真实沙箱里跑（56 次 0 失败），
+"参考代码均经判题 AC"是测试保证。详情接口做门控：**AC 过该题或管理员**
+才下发内容，未解锁只给 `has_official_solution` 标记（内容不进响应而非
+前端隐藏，devtools/抓包拿不到）；前端 AC 前显示锁定提示、AC 后出现
+可折叠题解面板。管理端建题/补丁可写题解。
 
 ### 管理后台：趋势图表 / 判题后端状态 / CSV 导入用户
 
@@ -470,7 +492,7 @@ app/                     后端（FastAPI）
 ├── config.py            环境变量配置（默认 mock，离线可用）
 ├── db.py                异步引擎 + WAL + 全局写锁（写事务串行提交）
 ├── schema_sync.py       启动时 schema 自愈（只做加法）
-├── models.py            17 张表（SQLAlchemy 2.0 声明式）
+├── models.py            23 张表（SQLAlchemy 2.0 声明式）
 ├── schemas.py           Agent 结构化输出契约（Literal 锁死枚举）
 ├── security.py          PBKDF2 口令 + HMAC 双 Token + 版本号失效
 ├── deps.py              FastAPI 依赖（当前用户 / 管理员 / 模型配置 / 分页）
@@ -498,7 +520,7 @@ app/                     后端（FastAPI）
 ├── agents/              9 个 Agent（各自声明 schema / prompt / 规则兜底）
 │                       核心 5 个：roadmap / recommend / hint / mastery / review
 │                       支撑 4 个：judge / solution / difficulty / quality
-└── api/                 10 组路由，75 个接口
+└── api/                 13 组路由，113 个接口
 
 migrations/               Alembic 迁移（破坏性变更用）
 deploy/Caddyfile          生产反代（TLS + SSE 不缓冲 + 安全头）
@@ -554,11 +576,11 @@ clamped = clamp_to_window(model_out, (lo, hi))
 
 | 指标 | 实测值 | 命令 |
 |---|---|---|
-| 单元 + 集成测试 | **294 项通过 / 7 项按环境跳过** | `python -m pytest` |
-| 测试覆盖率 | **76%**（CI 门禁 `--cov-fail-under=75`） | `python -m pytest --cov=app` |
+| 单元 + 集成测试 | **532 项通过 / 7 项按环境跳过** | `python -m pytest` |
+| 测试覆盖率 | **93%**（CI 门禁 `--cov-fail-under=90`，sysmon 口径） | `python -m pytest --cov=app` |
 | 代码质量 | **ruff 0 告警**（check + format 双通过） | `python -m ruff check .` |
 | 判题沙箱自测 | **10/10**（Python 7 种 verdict + Java 3 种） | `python scripts/judge_selftest.py` |
-| 数据库迁移 | **9/9**（空库→head→回滚→head） | `python scripts/check_migrations.py` |
+| 数据库迁移 | **8/8**（空库→head→回滚→head） | `python scripts/check_migrations.py` |
 | 部署配置校验 | 全部通过（Dockerfile / compose / Caddy / 环境变量） | `python scripts/check_deploy.py` |
 | 基础 HTTP 冒烟 | **31/31** | `python scripts/smoke.py` |
 | 批次 A 验收（判题/流式/幂等） | **18/18** | `python scripts/smoke_batch_a.py` |
@@ -568,7 +590,7 @@ clamped = clamp_to_window(model_out, (lo, hi))
 | 并发压测 | **14/14 断言**（4 个场景：read/write/mixed/pipeline），读 191 req/s、写 125 req/s、读 p95 74ms、0 次 `database is locked` | `python scripts/loadtest.py --users 10 --duration 8` |
 | 难度标注 Kappa（vs 人工标注） | **0.788** | `python -m scripts.eval_difficulty` |
 | 完全一致率 / 越界率 / 可复现性 | **0.833 / 0 / true** | 同上 |
-| 业务接口数 / 数据表 | **75 个接口 / 17 张表** | `python scripts/check_routes.py` |
+| 业务接口数 / 数据表 | **113 个接口 / 23 张表** | `python scripts/check_routes.py` |
 | 后端规模 | `app/` 51 个文件 / 13040 行；含 tests+scripts+migrations 共 83 文件 / 19941 行 | — |
 | 前端规模 | 26 个源文件 / 5500 行 / 14 个页面 | — |
 | 前端构建 | 2290 模块 / 10.9s / dist 2737KB | `cd web && pnpm build` |
