@@ -878,14 +878,22 @@ async def persist_task(db: AsyncSession, data: dict[str, Any]) -> BackgroundTask
         pass
 
     # 写锁重试：202 并发 pipeline 提交时 INSERT 撞 "database is locked"
-    # （busy_timeout 5s 在 CI runner 上也可能不够）。退避 0.2/0.4/0.8s，
-    # 最坏 ~1.4s；注意重试前必须回滚本次失败语句，否则 session 处于
-    # "失败待回滚"状态，后续 execute 全部报 InternalError。
+    # （busy_timeout 5s 在 CI runner 上也可能不够）。注意重试前必须回滚本次
+    # 失败语句，否则 session 处于"失败待回滚"状态，后续 execute 全部报
+    # InternalError。
+    #
+    # 为什么 5 次 / 最长 ~6.2s：flush 阶段不在全局写锁内（session_scope 只
+    # 包 commit），20 个协程并发 flush 时各自持未提交写事务。Redis 可用时
+    # 分布式锁把提交串行化、撞锁窗口很小；Redis 缺失（本地未启动/生产未配）
+    # 降级进程内锁，撞锁窗口拉长。实测 Redis 不在时 3 次/1.4s 不够（
+    # 2026-11-10 本机 test_persist_task_concurrent_upsert_same_id 必挂，
+    # 启动 Redis 后 3.9s 全过）。加大到 5 次覆盖该窗口，最坏 ~6.2s。
     import asyncio as _asyncio
 
     from sqlalchemy.exc import OperationalError as _OpError
 
-    for attempt in range(3):
+    _MAX_ATTEMPTS = 5
+    for attempt in range(_MAX_ATTEMPTS):
         try:
             if dialect == "sqlite":
                 await _upsert_task_sqlite(db, task_id, data)
@@ -895,7 +903,7 @@ async def persist_task(db: AsyncSession, data: dict[str, Any]) -> BackgroundTask
             await db.flush()
             break
         except _OpError as e:
-            if "database is locked" not in str(e) or attempt == 2:
+            if "database is locked" not in str(e) or attempt == _MAX_ATTEMPTS - 1:
                 raise
             await db.rollback()
             await _asyncio.sleep(0.2 * (2**attempt))
