@@ -19,6 +19,23 @@ const detailLoading = ref(false)
 const detail = ref<SubmissionDetail | null>(null)
 const generating = ref(false)
 
+// 展开行内联看代码：懒加载（展开才拉详情），按提交 id 缓存避免重复请求
+const codeCache = reactive<Record<string, string>>({})
+
+async function loadInlineCode(row: Submission) {
+  if (codeCache[row.id] !== undefined) return
+  try {
+    const d = await submissionApi.detail(row.id)
+    codeCache[row.id] = d.code || '（无代码）'
+  } catch {
+    codeCache[row.id] = '（加载失败，请点击右侧「详情」查看）'
+  }
+}
+
+function onExpandChange(row: Submission, expanded: Submission[]) {
+  if (expanded.some((r) => r.id === row.id)) void loadInlineCode(row)
+}
+
 async function load() {
   loading.value = true
   try {
@@ -95,14 +112,26 @@ onMounted(() => {
     </el-card>
 
     <el-card class="page-card" shadow="never">
-      <el-table :data="items" size="small" stripe>
+      <el-table :data="items" size="small" stripe @expand-change="onExpandChange">
+        <el-table-column type="expand" width="36">
+          <template #default="{ row }">
+            <div class="expand-code">
+              <div class="expand-code-head">
+                <el-tag size="small" effect="plain">{{ row.language }}</el-tag>
+                <span class="stat-label">该次提交的最终代码</span>
+              </div>
+              <pre v-if="codeCache[row.id] !== undefined" class="code-block">{{ codeCache[row.id] }}</pre>
+              <div v-else class="empty-hint">加载中…</div>
+            </div>
+          </template>
+        </el-table-column>
         <el-table-column label="时间" width="160">
           <template #default="{ row }">{{ fmtDate(row.created_at) }}</template>
         </el-table-column>
         <el-table-column label="题目" min-width="160">
           <template #default="{ row }">
             <el-button link type="primary" size="small" @click="goProblem(row.problem_id)">
-              查看题目
+              {{ row.problem_title || '查看题目' }}
             </el-button>
           </template>
         </el-table-column>
@@ -166,6 +195,16 @@ onMounted(() => {
             <el-descriptions-item label="耗时">{{ detail.submission.runtime_ms }}ms</el-descriptions-item>
             <el-descriptions-item label="提交时间" :span="2">
               {{ fmtDate(detail.submission.created_at) }}
+            </el-descriptions-item>
+            <el-descriptions-item label="题目" :span="2">
+              <el-button
+                link
+                type="primary"
+                size="small"
+                @click="goProblem(detail.submission.problem_id)"
+              >
+                {{ detail.submission.problem_title || detail.submission.problem_id }}
+              </el-button>
             </el-descriptions-item>
           </el-descriptions>
 
@@ -232,3 +271,16 @@ onMounted(() => {
     </el-drawer>
   </div>
 </template>
+
+<style scoped>
+/* 展开行：该次提交的最终代码 */
+.expand-code {
+  padding: 8px 16px 12px;
+}
+.expand-code-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+</style>

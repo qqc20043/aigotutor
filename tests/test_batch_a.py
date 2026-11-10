@@ -652,3 +652,24 @@ def test_registry_selfcheck_detects_missing_schema(monkeypatch):
     monkeypatch.setattr("app.schemas.SCHEMA_BY_AGENT", broken)
     problems = validate_registry()
     assert any("judge" in p for p in problems)
+
+
+async def test_submission_list_has_problem_title(seeded_client):
+    """提交记录列表必须带题目名（此前只有「查看题目」链接没有标题，无法辨认）。
+
+    列表不存冗余字段：读时按 problem_id 批量 IN 查题名（20 条一次查询）。
+    详情接口同样带题名，供抽屉展示。
+    """
+    r = await seeded_client.get("/api/submissions?page=1&size=5")
+    assert r.status_code == 200, r.text
+    items = r.json()["items"]
+    assert items, "demo 种子必须有提交记录"
+    for item in items:
+        assert item["problem_title"], f"提交 {item['id']} 缺题目名"
+    # 详情接口一致
+    sid = items[0]["id"]
+    r = await seeded_client.get(f"/api/submissions/{sid}")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["submission"]["problem_title"] == items[0]["problem_title"]
+    assert isinstance(body["code"], str)

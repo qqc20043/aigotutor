@@ -96,6 +96,8 @@ export interface TestCase {
 export interface Submission {
   id: string
   problem_id: string
+  /** 题目名（列表接口批量填充；详情接口同样带） */
+  problem_title?: string
   language: string
   verdict: Verdict
   passed_cases: number

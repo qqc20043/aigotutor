@@ -184,6 +184,8 @@ class SubmissionIn(BaseModel):
 class SubmissionOut(BaseModel):
     id: str
     problem_id: str
+    # 题目名（列表接口批量填充；不存冗余字段，读时 join）
+    problem_title: str = ""
     language: str
     verdict: str
     passed_cases: int

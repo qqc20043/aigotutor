@@ -16,7 +16,7 @@ from ..judge_service import (
     count_testcases,
     judge_submission_in_sandbox,
 )
-from ..models import Submission
+from ..models import Problem, Submission
 from ..services import (
     add_review,
     create_submission,
@@ -33,10 +33,11 @@ from .schemas import JudgeOut, SubmissionIn, SubmissionOut
 router = APIRouter(prefix="/api/submissions", tags=["③ 提交与评测"])
 
 
-def _to_out(sub) -> SubmissionOut:
+def _to_out(sub, title: str = "") -> SubmissionOut:
     return SubmissionOut(
         id=sub.id,
         problem_id=sub.problem_id,
+        problem_title=title,
         language=sub.language,
         verdict=sub.verdict,
         passed_cases=sub.passed_cases,
@@ -46,6 +47,17 @@ def _to_out(sub) -> SubmissionOut:
         judged_by=getattr(sub, "judged_by", "caller"),
         created_at=sub.created_at,
     )
+
+
+async def _titles_map(db, subs: list[Submission]) -> dict[str, str]:
+    """批量取题目名（列表 20 条一次 IN 查询；不存冗余字段，防题名改后不一致）。"""
+    ids = list({s.problem_id for s in subs if s.problem_id})
+    if not ids:
+        return {}
+    from sqlalchemy import select as sa_select
+
+    rows = (await db.execute(sa_select(Problem.id, Problem.title).where(Problem.id.in_(ids)))).all()
+    return dict(rows)
 
 
 @router.post("", response_model=dict, status_code=status.HTTP_201_CREATED)
@@ -234,8 +246,9 @@ async def list_submissions_api(
         offset=page.offset,
         limit=page.size,
     )
+    titles = await _titles_map(db, rows)
     return {
-        "items": [_to_out(s).model_dump() for s in rows],
+        "items": [_to_out(s, titles.get(s.problem_id, "")).model_dump() for s in rows],
         "total": total,
         "page": page.page,
         "size": page.size,
@@ -250,7 +263,9 @@ async def submission_detail(submission_id: str, db: DbSession, user: UserDep):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "提交不存在")
     reviews = await list_reviews(db, submission_id)
     return {
-        "submission": _to_out(sub).model_dump(),
+        "submission": _to_out(
+            sub, (await _titles_map(db, [sub])).get(sub.problem_id, "")
+        ).model_dump(),
         "code": sub.code,
         "judge_detail": json.loads(sub.judge_detail or "{}"),
         "reviews": [

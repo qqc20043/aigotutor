@@ -39,6 +39,27 @@ os.environ.setdefault("AIGOTUTOR_REDIS_URL", "redis://127.0.0.1:6379/0")
 atexit.register(lambda: shutil.rmtree(_tmpdir, ignore_errors=True))
 
 
+def _reset_stale_agent_cache() -> None:
+    """会话开始前清空本应用的 Agent 缓存。
+
+    Agent 缓存是内容寻址且跨进程持久（Redis）：上一次运行留下的同名
+    payload 命中后直接返回旧结果（tokens=0 / cached=True），会让依赖
+    "真实调用"的断言假失败。2026-11-10 实测：单跑 test_api 两例
+    （test_run_single_agent / test_cache_reduces_duplicate_calls）在
+    本机 Redis 有残留缓存时必挂，清空即恢复。只清本应用前缀，
+    不影响同实例的其它数据。
+    """
+    try:
+        from app.core.cache import cache_clear
+
+        cache_clear()
+    except Exception:  # 缓存后端异常不应阻断测试收集
+        pass
+
+
+_reset_stale_agent_cache()
+
+
 @pytest.fixture(autouse=True)
 async def _ensure_schema():
     """确保数据库已建表（幂等）。
