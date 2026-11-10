@@ -579,3 +579,42 @@ class AdminAuditLog(Base, TimestampMixin):
     target_type: Mapped[str] = mapped_column(String(32), default="")
     target_id: Mapped[str] = mapped_column(String(64), default="")
     detail: Mapped[str] = mapped_column(Text, default="{}")  # JSON：参数与结果摘要
+
+
+# ---------------------------------------------------- 24 study_plans
+class StudyPlan(Base, TimestampMixin):
+    """学习计划（对标 LeetCode Study Plan）。
+
+    零报名制：不建"用户加入计划"表——进度由提交记录派生（某题有 AC 即
+    视为完成），与 XP/成就"从事实表派生"的原则一致，天然幂等、无状态
+    迁移问题。计划只是"题目清单 + 展示元数据"。
+    """
+
+    __tablename__ = "study_plans"
+    __table_args__ = (Index("ix_study_plans_category", "category", "sort_order"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    title: Mapped[str] = mapped_column(String(120), default="")
+    subtitle: Mapped[str] = mapped_column(String(200), default="")
+    category: Mapped[str] = mapped_column(String(32), default="精选")  # 精选|面试准备|基础
+    theme: Mapped[str] = mapped_column(String(16), default="green")  # 前端卡片配色
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+
+
+# ---------------------------------------------------- 25 study_plan_items
+class StudyPlanItem(Base):
+    """计划-题目映射（有序清单）。不继承 TimestampMixin：纯关联行。"""
+
+    __tablename__ = "study_plan_items"
+    __table_args__ = (
+        Index("ix_study_plan_items_plan", "plan_id", "order_no"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    plan_id: Mapped[str] = mapped_column(
+        ForeignKey("study_plans.id", ondelete="CASCADE"), nullable=False
+    )
+    problem_id: Mapped[str] = mapped_column(
+        ForeignKey("problems.id", ondelete="CASCADE"), nullable=False
+    )
+    order_no: Mapped[int] = mapped_column(Integer, default=0)

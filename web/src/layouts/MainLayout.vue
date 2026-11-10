@@ -21,6 +21,7 @@ const menuItems = computed(() =>
     { path: '/import', title: '题面导入', icon: 'Upload' },
     { path: '/mastery', title: '掌握度画像', icon: 'TrendCharts' },
     { path: '/review', title: '复习队列', icon: 'AlarmClock' },
+    { path: '/study-plan', title: '学习计划', icon: 'Reading' },
     { path: '/interview', title: '模拟面试', icon: 'UserFilled' },
     { path: '/wrong-book', title: '错题本', icon: 'Collection' },
     { path: '/checkin', title: '打卡与排行', icon: 'Calendar' },

@@ -29,6 +29,7 @@ from .api import (
     problems,
     recommend,
     review,
+    study_plans,
     submissions,
     users,
 )
@@ -165,6 +166,7 @@ for router in (
     chat.router,
     interview.router,
     practice.router,
+    study_plans.router,
     admin.router,
 ):
     app.include_router(router)

@@ -57,6 +57,18 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '复习队列', icon: 'AlarmClock' },
       },
       {
+        path: 'study-plan',
+        name: 'study-plan',
+        component: () => import('@/views/StudyPlanView.vue'),
+        meta: { title: '学习计划', icon: 'Reading' },
+      },
+      {
+        path: 'study-plan/:id',
+        name: 'study-plan-detail',
+        component: () => import('@/views/StudyPlanDetailView.vue'),
+        meta: { title: '学习计划详情', hidden: true },
+      },
+      {
         path: 'wrong-book',
         name: 'wrong-book',
         component: () => import('@/views/WrongBookView.vue'),

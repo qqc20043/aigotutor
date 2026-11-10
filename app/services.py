@@ -23,6 +23,8 @@ from .models import (
     ProblemTag,
     Review,
     ReviewQueue,
+    StudyPlan,
+    StudyPlanItem,
     Submission,
     Tag,
     User,
@@ -1117,4 +1119,101 @@ async def export_user_data(db: AsyncSession, user_id: str) -> dict[str, Any]:
             }
             for s in subs
         ],
+    }
+
+
+# ================================================================== 学习计划
+async def _ac_problem_ids(db: AsyncSession, user_id: str) -> set[str]:
+    """当前用户 AC 过的题目集合（学习计划进度的事实源）。"""
+    rows = (
+        await db.execute(
+            select(Submission.problem_id)
+            .where(Submission.user_id == user_id, Submission.verdict == "AC")
+            .distinct()
+        )
+    ).all()
+    return {pid for (pid,) in rows}
+
+
+async def list_study_plans(db: AsyncSession, user_id: str) -> list[dict[str, Any]]:
+    """计划列表 + 当前用户进度（零报名：进度由 AC 事实派生）。"""
+    plans = (
+        (await db.execute(select(StudyPlan).order_by(StudyPlan.sort_order, StudyPlan.title)))
+        .scalars()
+        .all()
+    )
+    if not plans:
+        return []
+    items = (await db.execute(select(StudyPlanItem))).scalars().all()
+    by_plan: dict[str, list[str]] = {}
+    for it in items:
+        by_plan.setdefault(it.plan_id, []).append(it.problem_id)
+    ac_ids = await _ac_problem_ids(db, user_id)
+    out: list[dict[str, Any]] = []
+    for p in plans:
+        pids = by_plan.get(p.id, [])
+        done = sum(1 for pid in pids if pid in ac_ids)
+        total = len(pids)
+        out.append(
+            {
+                "id": p.id,
+                "title": p.title,
+                "subtitle": p.subtitle,
+                "category": p.category,
+                "theme": p.theme,
+                "sort_order": p.sort_order,
+                "total": total,
+                "done": done,
+                "percent": round(done / total * 100, 1) if total else 0.0,
+                "in_progress": 0 < done < total,
+                "completed": total > 0 and done == total,
+            }
+        )
+    return out
+
+
+async def get_study_plan_detail(
+    db: AsyncSession, plan_id: str, user_id: str
+) -> dict[str, Any] | None:
+    """计划详情：题目清单（按 order_no）+ 每题是否已 AC + 标签/难度。"""
+    plan = await db.get(StudyPlan, plan_id)
+    if plan is None:
+        return None
+    rows = (
+        await db.execute(
+            select(StudyPlanItem, Problem)
+            .join(Problem, Problem.id == StudyPlanItem.problem_id)
+            .where(StudyPlanItem.plan_id == plan_id)
+            .order_by(StudyPlanItem.order_no, Problem.title)
+        )
+    ).all()
+    pids = [p.id for _, p in rows]
+    tag_map = await get_problem_tags(db, pids)
+    ac_ids = await _ac_problem_ids(db, user_id)
+    items = [
+        {
+            "order_no": it.order_no,
+            "problem_id": p.id,
+            "title": p.title,
+            "difficulty": p.difficulty,
+            "difficulty_score": p.difficulty_score,
+            "tags": [t["name"] for t in tag_map.get(p.id, [])],
+            "solved": p.id in ac_ids,
+        }
+        for it, p in rows
+    ]
+    total = len(items)
+    done = sum(1 for i in items if i["solved"])
+    return {
+        "plan": {
+            "id": plan.id,
+            "title": plan.title,
+            "subtitle": plan.subtitle,
+            "category": plan.category,
+            "theme": plan.theme,
+            "total": total,
+            "done": done,
+            "percent": round(done / total * 100, 1) if total else 0.0,
+        },
+        "items": items,
     }

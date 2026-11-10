@@ -19,6 +19,8 @@ import type {
   ReviewMarkResult,
   RoadmapResult,
   SimilarProblem,
+  StudyPlan,
+  StudyPlanDetail,
   Submission,
   SubmissionDetail,
   SubmitResult,
@@ -714,3 +716,14 @@ export const practiceApi = {
 }
 
 
+
+// ------------------------------------------------------------ ⑭ 学习计划
+export const studyPlanApi = {
+  list: () =>
+    http
+      .get<{ items: StudyPlan[]; in_progress: StudyPlan[] }>('/study-plans')
+      .then((r) => r.data),
+
+  detail: (id: string) =>
+    http.get<StudyPlanDetail>(`/study-plans/${id}`).then((r) => r.data),
+}

@@ -355,3 +355,42 @@ export interface GamificationSummary {
   unlocked_count: number
   streak: { current: number; longest: number; freezes_used: number; freezes_left: number; checked_today: boolean }
 }
+
+// ------------------------------------------------------------ 学习计划
+export interface StudyPlan {
+  id: string
+  title: string
+  subtitle: string
+  category: string
+  theme: string
+  sort_order: number
+  total: number
+  done: number
+  percent: number
+  in_progress: boolean
+  completed: boolean
+}
+
+export interface StudyPlanItem {
+  order_no: number
+  problem_id: string
+  title: string
+  difficulty: string
+  difficulty_score: number
+  tags: string[]
+  solved: boolean
+}
+
+export interface StudyPlanDetail {
+  plan: {
+    id: string
+    title: string
+    subtitle: string
+    category: string
+    theme: string
+    total: number
+    done: number
+    percent: number
+  }
+  items: StudyPlanItem[]
+}
