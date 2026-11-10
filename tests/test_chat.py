@@ -197,3 +197,39 @@ def test_rule_reply_honesty():
     assert "写成代码" in r2
     r3 = rule_reply(ctx, "再直接一点", "key_observation")
     assert "当前的代码" in r3
+
+
+async def test_session_list_kind_filter(two_chat_users):
+    """辅导列表默认只出 tutor 会话：面试会话（kind=interview）不得混入侧栏。
+
+    2026-11-02 实测踩到：/api/chat/sessions 不区分 kind，「模拟面 · xxx」
+    出现在对话辅导页侧栏。kind=all 保留全量出口（诊断用）。
+    """
+    from app.db import session_scope
+    from app.models import ChatSession
+
+    client, ta, _ = two_chat_users
+    tutor = (
+        await client.post("/api/chat/sessions", json={}, headers={"Authorization": f"Bearer {ta}"})
+    ).json()
+    me = (await client.get("/api/auth/me", headers={"Authorization": f"Bearer {ta}"})).json()
+
+    # 造一个面试会话（同属主，kind=interview）
+    async with session_scope() as db:
+        db.add(
+            ChatSession(
+                user_id=me["id"],
+                title="模拟面 · 过滤测试",
+                kind="interview",
+                time_limit_minutes=20,
+            )
+        )
+
+    r = await client.get("/api/chat/sessions", headers={"Authorization": f"Bearer {ta}"})
+    titles = [i["title"] for i in r.json()["items"]]
+    assert tutor["title"] in titles
+    assert "模拟面 · 过滤测试" not in titles, "默认 kind=tutor 不得混入面试会话"
+
+    r = await client.get("/api/chat/sessions?kind=all", headers={"Authorization": f"Bearer {ta}"})
+    titles = [i["title"] for i in r.json()["items"]]
+    assert "模拟面 · 过滤测试" in titles, "kind=all 应返回全量"

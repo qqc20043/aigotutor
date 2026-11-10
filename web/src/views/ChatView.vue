@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { chatApi, type ChatMessageOut, type ChatSessionOut } from '@/api'
 import { getToken } from '@/api/http'
 import { fmtRelative } from '@/utils/format'
@@ -73,6 +73,33 @@ async function createSession() {
     current.value = s
     messages.value = []
     await loadSessions()
+  }
+}
+
+/** 删除会话：删的是当前打开的就清空对话区，否则只刷列表 */
+async function removeSession(s: ChatSessionOut, e?: Event) {
+  e?.stopPropagation() // 点在删除按钮上不要触发"打开会话"
+  try {
+    await ElMessageBox.confirm(
+      `删除会话「${s.title}」及其 ${s.message_count} 条消息？此操作不可恢复。`,
+      '删除会话',
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
+    )
+  } catch {
+    return // 用户取消
+  }
+  try {
+    await chatApi.remove(s.id)
+    if (current.value?.id === s.id) {
+      abort?.()
+      current.value = null
+      messages.value = []
+      streamText.value = ''
+    }
+    await loadSessions()
+    ElMessage.success('会话已删除')
+  } catch (err) {
+    ElMessage.error(`删除失败：${(err as Error).message}`)
   }
 }
 
@@ -200,6 +227,7 @@ onBeforeUnmount(() => abort?.())
         <div class="session-meta">
           {{ s.message_count }} 条 · {{ fmtRelative(s.updated_at) }}
         </div>
+        <button class="session-del" title="删除会话" @click="removeSession(s, $event)">×</button>
       </div>
       <el-empty v-if="!sessions.length" description="还没有会话" :image-size="60" />
     </div>
@@ -291,12 +319,36 @@ export default { name: 'ChatView' }
   margin-bottom: 10px;
 }
 .session-item {
+  position: relative;
   border-radius: 6px;
   padding: 8px 10px;
   cursor: pointer;
 }
 .session-item:hover {
   background: var(--el-fill-color-light);
+}
+.session-item .session-del {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: none;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: #909399;
+  font-size: 14px;
+  line-height: 16px;
+  cursor: pointer;
+}
+.session-item:hover .session-del {
+  display: block;
+}
+.session-item .session-del:hover {
+  color: #f56c6c;
+  background: var(--el-fill-color);
 }
 .session-item.active {
   background: var(--el-color-primary-light-9);

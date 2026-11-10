@@ -48,6 +48,7 @@ def _session_out(s: ChatSession) -> dict:
         "id": s.id,
         "problem_id": s.problem_id,
         "title": s.title,
+        "kind": s.kind,
         "strength": s.strength,
         "message_count": s.message_count,
         "created_at": s.created_at.isoformat(),
@@ -100,18 +101,22 @@ async def create_session(body: SessionCreateIn, db: DbSession, user: UserDep):
 
 
 @router.get("/sessions")
-async def list_sessions(db: DbSession, user: UserDep, limit: int = Query(default=20, ge=1, le=100)):
+async def list_sessions(
+    db: DbSession,
+    user: UserDep,
+    limit: int = Query(default=20, ge=1, le=100),
+    kind: str = Query(default="tutor"),
+):
+    """会话列表。默认只返回辅导会话（kind=tutor）。
+
+    面试会话（kind=interview）由模拟面试页管理，此前不区分 kind 导致
+    辅导页侧栏混入「模拟面 · xxx」会话；kind=all 可取全部（诊断用）。
+    """
+    q = select(ChatSession).where(ChatSession.user_id == user.id)
+    if kind and kind != "all":
+        q = q.where(ChatSession.kind == kind)
     rows = (
-        (
-            await db.execute(
-                select(ChatSession)
-                .where(ChatSession.user_id == user.id)
-                .order_by(ChatSession.updated_at.desc())
-                .limit(limit)
-            )
-        )
-        .scalars()
-        .all()
+        (await db.execute(q.order_by(ChatSession.updated_at.desc()).limit(limit))).scalars().all()
     )
     return {"items": [_session_out(s) for s in rows]}
 

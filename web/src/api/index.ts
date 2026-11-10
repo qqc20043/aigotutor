@@ -515,8 +515,10 @@ export const chatApi = {
   createSession: (problem_id = '') =>
     http.post<ChatSessionOut>('/chat/sessions', { problem_id }).then((r) => r.data),
 
-  sessions: (limit = 20) =>
-    http.get<{ items: ChatSessionOut[] }>('/chat/sessions', { params: { limit } }).then((r) => r.data),
+  sessions: (limit = 20, kind = 'tutor') =>
+    http
+      .get<{ items: ChatSessionOut[] }>('/chat/sessions', { params: { limit, kind } })
+      .then((r) => r.data),
 
   detail: (id: string) =>
     http.get<{ session: ChatSessionOut; messages: ChatMessageOut[] }>(`/chat/sessions/${id}`).then((r) => r.data),
