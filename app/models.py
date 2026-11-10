@@ -606,9 +606,7 @@ class StudyPlanItem(Base):
     """计划-题目映射（有序清单）。不继承 TimestampMixin：纯关联行。"""
 
     __tablename__ = "study_plan_items"
-    __table_args__ = (
-        Index("ix_study_plan_items_plan", "plan_id", "order_no"),
-    )
+    __table_args__ = (Index("ix_study_plan_items_plan", "plan_id", "order_no"),)
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
     plan_id: Mapped[str] = mapped_column(
